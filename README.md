@@ -73,7 +73,7 @@ It automatically selects the fastest mirror and improves package download perfor
 ---
 
 ## 🛠️ Installation
-```
+
 
 ### ⚡ Quick Install (Recommended)
 

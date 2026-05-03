@@ -72,22 +72,19 @@ It automatically selects the fastest mirror and improves package download perfor
 
 ---
 
-## 🛠️ Installation
+# 🛠️ Installation
 
-
-### ⚡ Quick Install (Recommended)
-
-> ⚠️ Runs script directly from GitHub (use only if you trust repository)
+## ⚡ Quick Install (Recommended)
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/BTF-Kabir-2020/apt-mirror-pro/main/mirror.sh)
 ```
 
+> ⚠️ Executes directly from internet (only use trusted sources)
+
 ---
 
-### 📦 Manual Install (Safer)
-
-> Recommended for production or review before execution
+## 📦 Manual Install (Safer)
 
 ```bash
 git clone https://github.com/BTF-Kabir-2020/apt-mirror-pro.git
@@ -98,16 +95,12 @@ sudo ./mirror.sh
 
 ---
 
-### ⚙️ Install with Options (Advanced)
+## ⚙️ Install Global Command (Optional)
+
+بعد از اجرای manual:
 
 ```bash
-sudo ./mirror.sh --install-global
-```
-
-or silent mode:
-
-```bash
-sudo ./mirror.sh --install-global --silent
+sudo ./mirror.sh
 ```
 
 ---

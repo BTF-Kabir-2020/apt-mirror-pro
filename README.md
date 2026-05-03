@@ -74,6 +74,14 @@ It automatically selects the fastest mirror and improves package download perfor
 
 ## 🛠️ Installation
 
+### ⚡ Quick Install (Recommended)
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/BTF-Kabir-2020/apt-mirror-pro/main/mirror.sh)
+```
+
+
+## 📦 Manual Install
+
 ```bash
 git clone https://github.com/BTF-Kabir-2020/apt-mirror-pro.git
 cd apt-mirror-pro

@@ -2,20 +2,9 @@
 
 set -e
 
-# ───────────────────────── FLAGS ─────────────────────────
-INSTALL_GLOBAL=0
-SILENT=0
-
-for arg in "$@"; do
-    case $arg in
-        --install-global) INSTALL_GLOBAL=1 ;;
-        --silent) SILENT=1 ;;
-    esac
-done
-
 # ───────────────────────── FILES ─────────────────────────
 SOURCES_FILE="/etc/apt/sources.list"
-BACKUP_FILE="/etc/apt/sources.list.bak.mirror-pro"
+BACKUP_FILE="/etc/apt/sources.list.bak"
 MIRRORS_LIST_URL="http://mirrors.ubuntu.com/IR.txt"
 
 # ───────────────────────── COLORS ─────────────────────────
@@ -51,46 +40,36 @@ declare -A MIRROR_URLS=(
 ["ParsVDS"]="https://ubuntu.parsvds.com/ubuntu/"
 )
 
+OFFICIAL="https://archive.ubuntu.com/ubuntu/"
+
 # ───────────────────────── ROOT CHECK ─────────────────────────
 [[ $EUID -ne 0 ]] && echo "${RED}Run as root${NC}" && exit 1
-
-# ───────────────────────── GLOBAL COMMAND ─────────────────────────
-create_command_link() {
-    local target="/usr/local/bin/mirror"
-    local source
-    source="$(readlink -f "$0")"
-
-    if [[ "$INSTALL_GLOBAL" -ne 1 ]]; then
-        return
-    fi
-
-    if [[ "$SILENT" -ne 1 ]]; then
-        read -rp "Install global command 'mirror'? (y/n): " ans
-        [[ ! "$ans" =~ ^[Yy]$ ]] && return
-    fi
-
-    rm -f "$target"
-    ln -s "$source" "$target"
-    chmod +x "$target"
-
-    [[ "$SILENT" -ne 1 ]] && echo "✔ mirror command installed"
-}
-
-create_command_link
 
 # ───────────────────────── BACKUP ─────────────────────────
 backup_sources() {
     [[ -f "$BACKUP_FILE" ]] || cp "$SOURCES_FILE" "$BACKUP_FILE"
 }
 
+# ───────────────────────── RESET ─────────────────────────
+reset_sources() {
+    echo "${YELLOW}Resetting APT sources...${NC}"
+
+    if [[ -f "$BACKUP_FILE" ]]; then
+        cp "$BACKUP_FILE" "$SOURCES_FILE"
+        echo "${GREEN}Restored from backup${NC}"
+    else
+        echo "${RED}No backup found → switching to official Ubuntu${NC}"
+        update_sources "$OFFICIAL"
+    fi
+
+    apt update || true
+}
+
 # ───────────────────────── CONFIRM ─────────────────────────
 confirm_change() {
-    [[ "$SILENT" -eq 1 ]] && return
-
     echo
-    echo "${YELLOW}⚠ You are modifying APT sources${NC}"
+    echo "${YELLOW}⚠ You are about to modify system APT sources${NC}"
     read -rp "Continue? (y/N): " c
-
     [[ ! "$c" =~ ^[Yy]$ ]] && echo "${RED}Cancelled${NC}" && exit 0
 }
 
@@ -104,7 +83,7 @@ validate_url() {
 }
 
 get_current_mirror() {
-    grep -m 1 "^deb " "$SOURCES_FILE" 2>/dev/null | awk '{print $2}'
+    grep -m1 "^deb " "$SOURCES_FILE" | awk '{print $2}'
 }
 
 # ───────────────────────── UPDATE ─────────────────────────
@@ -114,7 +93,7 @@ update_sources() {
 
     codename=$(get_codename)
 
-    validate_url "$mirror" || { echo "Invalid URL"; return 1; }
+    validate_url "$mirror" || { echo "${RED}Invalid URL${NC}"; return 1; }
 
     [[ $mirror != */ ]] && mirror="${mirror}/"
 
@@ -132,14 +111,13 @@ deb-src $mirror $codename-backports main restricted universe multiverse
 deb https://security.ubuntu.com/ubuntu $codename-security main restricted universe multiverse
 EOF
 
-    echo "${GREEN}Updated -> $mirror${NC}"
+    echo "${GREEN}Updated → $mirror${NC}"
 }
 
 # ───────────────────────── SPEED TEST ─────────────────────────
 speed_test() {
-    curl -o /dev/null -s -w "%{time_total}" \
-    --connect-timeout 2 --max-time 3 \
-    "$1/dists/$(get_codename)/Release"
+    curl -s -o /dev/null -w "%{time_total}" \
+    --max-time 3 "$1/dists/$(get_codename)/Release"
 }
 
 # ───────────────────────── AUTO SELECT ─────────────────────────
@@ -154,7 +132,7 @@ auto_select() {
 
         t=$(speed_test "$m")
 
-        [[ -z "$t" ]] && { echo "FAIL"; continue; }
+        [[ -z "$t" ]] && { echo "${RED}FAIL${NC}"; continue; }
 
         echo "${GREEN}${t}s${NC}"
 
@@ -164,7 +142,7 @@ auto_select() {
         fi
     done
 
-    [[ -z "$best" ]] && echo "No mirror found" && return 1
+    [[ -z "$best" ]] && echo "${RED}No mirror found${NC}" && return 1
 
     echo "${GREEN}Best Mirror: $best${NC}"
     update_sources "$best"
@@ -172,35 +150,8 @@ auto_select() {
 
 # ───────────────────────── REGIONAL ─────────────────────────
 get_regional() {
-    cc=$(curl -s https://ipapi.co/country || echo "us")
+    cc=$(curl -s --max-time 3 https://ipapi.co/country || echo "us")
     echo "https://${cc,,}.archive.ubuntu.com/ubuntu/"
-}
-
-# ───────────────────────── RESET (NEW) ─────────────────────────
-reset_sources() {
-    echo
-    echo "${YELLOW}Reset Options:${NC}"
-    echo "1) Restore backup"
-    echo "2) Official Ubuntu defaults"
-    read -rp "Choose: " r
-
-    case $r in
-        1)
-            [[ -f "$BACKUP_FILE" ]] || { echo "No backup found"; return 1; }
-            cp "$BACKUP_FILE" "$SOURCES_FILE"
-            echo "${GREEN}✔ Restored backup${NC}"
-            ;;
-        2)
-            codename=$(get_codename)
-            cat > "$SOURCES_FILE" <<EOF
-deb http://archive.ubuntu.com/ubuntu $codename main restricted universe multiverse
-deb http://archive.ubuntu.com/ubuntu $codename-updates main restricted universe multiverse
-deb http://archive.ubuntu.com/ubuntu $codename-backports main restricted universe multiverse
-deb http://security.ubuntu.com/ubuntu $codename-security main restricted universe multiverse
-EOF
-            echo "${GREEN}✔ Reset to official Ubuntu${NC}"
-            ;;
-    esac
 }
 
 # ───────────────────────── MENU ─────────────────────────
@@ -216,12 +167,16 @@ show_menu() {
         ((i++))
     done
 
-    echo "$i) Auto"; ((i++))
-    echo "$i) Official Ubuntu"; ((i++))
-    echo "$i) Regional"; ((i++))
-    echo "$i) Custom"; ((i++))
-    echo "$i) Show IR list"; ((i++))
-    echo "$i) Reset APT sources"; ((i++))
+    echo "$i) Auto"
+    ((i++))
+    echo "$i) Official Ubuntu"
+    ((i++))
+    echo "$i) Reset"
+    ((i++))
+    echo "$i) Custom"
+    ((i++))
+    echo "$i) Show IR list"
+    ((i++))
     echo "$i) Exit"
 }
 
@@ -233,29 +188,25 @@ while true; do
     if (( choice >= 1 && choice <= ${#MIRROR_NAMES[@]} )); then
         name="${MIRROR_NAMES[$((choice-1))]}"
         update_sources "${MIRROR_URLS[$name]}"
-        continue
-    fi
 
-    case "$choice" in
-        $(( ${#MIRROR_NAMES[@]} + 1 ))) auto_select ;;
-        $(( ${#MIRROR_NAMES[@]} + 2 ))) update_sources "https://archive.ubuntu.com/ubuntu/" ;;
-        $(( ${#MIRROR_NAMES[@]} + 3 ))) update_sources "$(get_regional)" ;;
-        $(( ${#MIRROR_NAMES[@]} + 4 )))
-            read -rp "Enter URL: " u
-            update_sources "$u"
-            ;;
-        $(( ${#MIRROR_NAMES[@]} + 5 )))
-            clear
-            echo "🇮🇷 IR Mirrors:"
-            curl -s "$MIRRORS_LIST_URL" | nl -ba
-            read -rp "Press Enter..."
-            ;;
-        $(( ${#MIRROR_NAMES[@]} + 6 ))) reset_sources ;;
-        $(( ${#MIRROR_NAMES[@]} + 7 ))) exit ;;
-        *)
-            echo "Invalid choice"
-            ;;
-    esac
+    else
+        offset=$((choice - ${#MIRROR_NAMES[@]}))
+
+        case $offset in
+            1) auto_select ;;
+            2) update_sources "$OFFICIAL" ;;
+            3) reset_sources ;;
+            4)
+                read -rp "Enter URL: " u
+                update_sources "$u"
+                ;;
+            5)
+                curl -s "$MIRRORS_LIST_URL"
+                read -rp "Press Enter..."
+                ;;
+            6) exit ;;
+        esac
+    fi
 
     echo "${YELLOW}Running apt update...${NC}"
     apt update || echo "${RED}apt update failed${NC}"

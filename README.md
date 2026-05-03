@@ -95,12 +95,22 @@ sudo ./mirror.sh
 
 ---
 
-## ⚙️ Install Global Command (Optional)
-
-بعد از اجرای manual:
+### ⚙️ Install with Options (Advanced)
 
 ```bash
-sudo ./mirror.sh
+git clone https://github.com/BTF-Kabir-2020/apt-mirror-pro.git
+cd apt-mirror-pro
+chmod +x mirror.sh
+sudo ./mirror.sh --install-global
+```
+
+or silent mode:
+
+```bash
+git clone https://github.com/BTF-Kabir-2020/apt-mirror-pro.git
+cd apt-mirror-pro
+chmod +x mirror.sh
+sudo ./mirror.sh --install-global --silent
 ```
 
 ---

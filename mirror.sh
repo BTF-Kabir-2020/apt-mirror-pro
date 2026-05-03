@@ -56,9 +56,14 @@ reset_sources() {
 
     if [[ -f "$BACKUP_FILE" ]]; then
         cp "$BACKUP_FILE" "$SOURCES_FILE"
-        echo "${GREEN}Restored from backup${NC}"
+        echo "${GREEN}✔ Restored from backup${NC}"
     else
-        echo "${RED}No backup found → switching to official Ubuntu${NC}"
+        echo "${YELLOW}⚠ No backup found${NC}"
+        echo "This usually means first run or backup was deleted."
+        read -rp "Switch to Official Ubuntu? (y/N): " r
+
+        [[ "$r" =~ ^[Yy]$ ]] || { echo "Cancelled"; exit 0; }
+
         update_sources "$OFFICIAL"
     fi
 

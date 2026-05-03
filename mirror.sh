@@ -2,15 +2,33 @@
 
 set -e
 
+# ───────────────────────── FLAGS ─────────────────────────
+INSTALL_GLOBAL=0
+SILENT=0
+
+for arg in "$@"; do
+    case $arg in
+        --install-global)
+            INSTALL_GLOBAL=1
+            ;;
+        --silent)
+            SILENT=1
+            ;;
+    esac
+done
+
+# ───────────────────────── FILES ─────────────────────────
 SOURCES_FILE="/etc/apt/sources.list"
 BACKUP_FILE="/etc/apt/sources.list.bak"
 MIRRORS_LIST_URL="http://mirrors.ubuntu.com/IR.txt"
 
+# ───────────────────────── COLORS ─────────────────────────
 GREEN=$'\e[0;32m'
 RED=$'\e[0;31m'
 YELLOW=$'\e[0;33m'
 NC=$'\e[0m'
 
+# ───────────────────────── MIRRORS ─────────────────────────
 MIRROR_NAMES=(
 "ArvanCloud"
 "IranServer"
@@ -40,40 +58,60 @@ declare -A MIRROR_URLS=(
 # ───────────────────────── ROOT CHECK ─────────────────────────
 [[ $EUID -ne 0 ]] && echo "${RED}Run as root${NC}" && exit 1
 
-# ───────────────────────── SAFE LINK FIX ─────────────────────────
+# ───────────────────────── GLOBAL INSTALL ─────────────────────────
 create_command_link() {
-    SCRIPT_PATH="$(realpath "$0")"
+    local target="/usr/local/bin/mirror"
+    local source
+    source="$(readlink -f "$0")"
 
-    # remove broken symlink if exists
-    rm -f /usr/local/bin/mirror
+    if [[ "$INSTALL_GLOBAL" -ne 1 ]]; then
+        return
+    fi
 
-    ln -sf "$SCRIPT_PATH" /usr/local/bin/mirror
-    chmod +x "$SCRIPT_PATH"
+    if [[ "$SILENT" -ne 1 ]]; then
+        echo "Do you want to install global command 'mirror'? (y/n)"
+        read -r ans
+
+        if [[ "$ans" != "y" && "$ans" != "Y" ]]; then
+            echo "Skipping global install."
+            return
+        fi
+    fi
+
+    if [[ -L "$target" || -e "$target" ]]; then
+        rm -f "$target"
+    fi
+
+    ln -s "$source" "$target"
+    chmod +x "$target"
+
+    [[ "$SILENT" -ne 1 ]] && echo "✔ Global command installed: mirror"
 }
 
 create_command_link
 
-# ───────────────────────── BACKUP (ALWAYS) ─────────────────────────
+# ───────────────────────── BACKUP ─────────────────────────
 backup_sources() {
-    cp "$SOURCES_FILE" "$BACKUP_FILE"
-    echo "${GREEN}Backup saved -> $BACKUP_FILE${NC}"
-}
-
-# ───────────────────────── CONFIRMATION ─────────────────────────
-confirm_change() {
-    echo
-    echo "${YELLOW}⚠️ WARNING: You are about to modify system APT sources!${NC}"
-    echo "File: $SOURCES_FILE"
-    echo
-    read -rp "Continue? (y/N): " confirm
-
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "${RED}Cancelled by user.${NC}"
-        exit 0
+    if [[ ! -f "$BACKUP_FILE" ]]; then
+        cp "$SOURCES_FILE" "$BACKUP_FILE"
+        echo "${GREEN}Backup created${NC}"
     fi
 }
 
-# ───────────────────────── SYSTEM INFO ─────────────────────────
+# ───────────────────────── CONFIRM ─────────────────────────
+confirm_change() {
+    if [[ "$SILENT" -eq 1 ]]; then
+        return
+    fi
+
+    echo
+    echo "${YELLOW}⚠ You are modifying system APT sources${NC}"
+    read -rp "Continue? (y/N): " c
+
+    [[ ! "$c" =~ ^[Yy]$ ]] && echo "${RED}Cancelled${NC}" && exit 0
+}
+
+# ───────────────────────── SYSTEM ─────────────────────────
 get_codename() {
     lsb_release -cs
 }
@@ -86,15 +124,14 @@ get_current_mirror() {
     grep -m 1 "^deb " "$SOURCES_FILE" | awk '{print $2}'
 }
 
-# ───────────────────────── UPDATE SOURCES ─────────────────────────
+# ───────────────────────── UPDATE ─────────────────────────
 update_sources() {
     local mirror=$1
-    local codename=$(get_codename)
+    local codename
 
-    if ! validate_url "$mirror"; then
-        echo "${RED}Invalid URL${NC}"
-        return 1
-    fi
+    codename=$(get_codename)
+
+    validate_url "$mirror" || { echo "${RED}Invalid URL${NC}"; return 1; }
 
     [[ $mirror != */ ]] && mirror="${mirror}/"
 
@@ -132,10 +169,7 @@ auto_select() {
 
         t=$(speed_test "$m")
 
-        if [[ -z "$t" || "$t" == "0.000" ]]; then
-            echo "${RED}FAIL${NC}"
-            continue
-        fi
+        [[ -z "$t" || "$t" == "0.000" ]] && { echo "${RED}FAIL${NC}"; continue; }
 
         echo "${GREEN}${t}s${NC}"
 
@@ -145,10 +179,7 @@ auto_select() {
         fi
     done
 
-    if [[ -z "$best" ]]; then
-        echo "${RED}No working mirror found!${NC}"
-        return 1
-    fi
+    [[ -z "$best" ]] && echo "${RED}No mirror found${NC}" && return 1
 
     echo "${GREEN}Best Mirror: $best${NC}"
     update_sources "$best"
@@ -173,11 +204,16 @@ show_menu() {
         ((i++))
     done
 
-    echo "$i) Auto (Best)" ; ((i++))
-    echo "$i) Official Ubuntu" ; ((i++))
-    echo "$i) Regional" ; ((i++))
-    echo "$i) Custom" ; ((i++))
-    echo "$i) Show IR list" ; ((i++))
+    echo "$i) Auto"
+    ((i++))
+    echo "$i) Official Ubuntu"
+    ((i++))
+    echo "$i) Regional"
+    ((i++))
+    echo "$i) Custom"
+    ((i++))
+    echo "$i) Show IR list"
+    ((i++))
     echo "$i) Exit"
 }
 
@@ -203,14 +239,14 @@ while true; do
                 ;;
             5)
                 curl --max-time 5 -s "$MIRRORS_LIST_URL"
-                read -rp "Enter to continue..."
+                read -rp "Press Enter..."
                 ;;
             6) exit ;;
         esac
     fi
 
-    echo "${YELLOW}Updating package list...${NC}"
+    echo "${YELLOW}Running apt update...${NC}"
     apt update || echo "${RED}apt update failed${NC}"
 
-    read -rp "Press Enter to continue..."
+    read -rp "Press Enter..."
 done

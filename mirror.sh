@@ -8,12 +8,8 @@ SILENT=0
 
 for arg in "$@"; do
     case $arg in
-        --install-global)
-            INSTALL_GLOBAL=1
-            ;;
-        --silent)
-            SILENT=1
-            ;;
+        --install-global) INSTALL_GLOBAL=1 ;;
+        --silent) SILENT=1 ;;
     esac
 done
 
@@ -58,7 +54,7 @@ declare -A MIRROR_URLS=(
 # ───────────────────────── ROOT CHECK ─────────────────────────
 [[ $EUID -ne 0 ]] && echo "${RED}Run as root${NC}" && exit 1
 
-# ───────────────────────── GLOBAL INSTALL ─────────────────────────
+# ───────────────────────── GLOBAL COMMAND ─────────────────────────
 create_command_link() {
     local target="/usr/local/bin/mirror"
     local source
@@ -69,46 +65,33 @@ create_command_link() {
     fi
 
     if [[ "$SILENT" -ne 1 ]]; then
-        echo "Do you want to install global command 'mirror'? (y/n)"
-        read -r ans
-
-        if [[ "$ans" != "y" && "$ans" != "Y" ]]; then
-            echo "Skipping global install."
-            return
-        fi
+        read -rp "Install global command 'mirror'? (y/n): " ans
+        [[ ! "$ans" =~ ^[Yy]$ ]] && return
     fi
 
-    if [[ -L "$target" || -e "$target" ]]; then
-        rm -f "$target"
-    fi
-
+    rm -f "$target"
     ln -s "$source" "$target"
     chmod +x "$target"
 
-    [[ "$SILENT" -ne 1 ]] && echo "✔ Global command installed: mirror"
+    [[ "$SILENT" -ne 1 ]] && echo "✔ Installed: mirror"
 }
 
 create_command_link
 
 # ───────────────────────── BACKUP ─────────────────────────
 backup_sources() {
-    if [[ ! -f "$BACKUP_FILE" ]]; then
-        cp "$SOURCES_FILE" "$BACKUP_FILE"
-        echo "${GREEN}Backup created${NC}"
-    fi
+    [[ -f "$BACKUP_FILE" ]] || cp "$SOURCES_FILE" "$BACKUP_FILE"
 }
 
 # ───────────────────────── CONFIRM ─────────────────────────
 confirm_change() {
-    if [[ "$SILENT" -eq 1 ]]; then
-        return
-    fi
+    [[ "$SILENT" -eq 1 ]] && return
 
     echo
-    echo "${YELLOW}⚠ You are modifying system APT sources${NC}"
+    echo "${YELLOW}⚠ You are modifying APT sources${NC}"
     read -rp "Continue? (y/N): " c
 
-    [[ ! "$c" =~ ^[Yy]$ ]] && echo "${RED}Cancelled${NC}" && exit 0
+    [[ ! "$c" =~ ^[Yy]$ ]] && echo "Cancelled" && exit 0
 }
 
 # ───────────────────────── SYSTEM ─────────────────────────
@@ -131,7 +114,7 @@ update_sources() {
 
     codename=$(get_codename)
 
-    validate_url "$mirror" || { echo "${RED}Invalid URL${NC}"; return 1; }
+    validate_url "$mirror" || { echo "Invalid URL"; return 1; }
 
     [[ $mirror != */ ]] && mirror="${mirror}/"
 
@@ -154,7 +137,9 @@ EOF
 
 # ───────────────────────── SPEED TEST ─────────────────────────
 speed_test() {
-    curl --max-time 3 -o /dev/null -s -w "%{time_total}" "$1/dists/$(get_codename)/Release"
+    curl -o /dev/null -s -w "%{time_total}" \
+    --connect-timeout 2 --max-time 3 \
+    "$1/dists/$(get_codename)/Release"
 }
 
 # ───────────────────────── AUTO SELECT ─────────────────────────
@@ -169,7 +154,7 @@ auto_select() {
 
         t=$(speed_test "$m")
 
-        [[ -z "$t" || "$t" == "0.000" ]] && { echo "${RED}FAIL${NC}"; continue; }
+        [[ -z "$t" ]] && { echo "FAIL"; continue; }
 
         echo "${GREEN}${t}s${NC}"
 
@@ -179,7 +164,7 @@ auto_select() {
         fi
     done
 
-    [[ -z "$best" ]] && echo "${RED}No mirror found${NC}" && return 1
+    [[ -z "$best" ]] && echo "No mirror found" && return 1
 
     echo "${GREEN}Best Mirror: $best${NC}"
     update_sources "$best"
@@ -187,7 +172,7 @@ auto_select() {
 
 # ───────────────────────── REGIONAL ─────────────────────────
 get_regional() {
-    cc=$(curl --max-time 3 -s https://ipapi.co/country || echo "us")
+    cc=$(curl -s https://ipapi.co/country || echo "us")
     echo "https://${cc,,}.archive.ubuntu.com/ubuntu/"
 }
 
@@ -204,46 +189,45 @@ show_menu() {
         ((i++))
     done
 
-    echo "$i) Auto"
-    ((i++))
-    echo "$i) Official Ubuntu"
-    ((i++))
-    echo "$i) Regional"
-    ((i++))
-    echo "$i) Custom"
-    ((i++))
-    echo "$i) Show IR list"
-    ((i++))
+    echo "$i) Auto"; ((i++))
+    echo "$i) Official Ubuntu"; ((i++))
+    echo "$i) Regional"; ((i++))
+    echo "$i) Custom"; ((i++))
+    echo "$i) Show IR list"; ((i++))
     echo "$i) Exit"
 }
 
-# ───────────────────────── MAIN LOOP ─────────────────────────
+# ───────────────────────── MAIN LOOP (FIXED) ─────────────────────────
 while true; do
     show_menu
     read -r choice
 
+    # FIX: direct mapping (no offset bugs)
     if (( choice >= 1 && choice <= ${#MIRROR_NAMES[@]} )); then
         name="${MIRROR_NAMES[$((choice-1))]}"
         update_sources "${MIRROR_URLS[$name]}"
-
-    else
-        offset=$((choice - ${#MIRROR_NAMES[@]}))
-
-        case $offset in
-            1) auto_select ;;
-            2) update_sources "https://archive.ubuntu.com/ubuntu/" ;;
-            3) update_sources "$(get_regional)" ;;
-            4)
-                read -rp "Enter URL: " u
-                update_sources "$u"
-                ;;
-            5)
-                curl --max-time 5 -s "$MIRRORS_LIST_URL"
-                read -rp "Press Enter..."
-                ;;
-            6) exit ;;
-        esac
+        continue
     fi
+
+    case "$choice" in
+        $(( ${#MIRROR_NAMES[@]} + 1 ))) auto_select ;;
+        $(( ${#MIRROR_NAMES[@]} + 2 ))) update_sources "https://archive.ubuntu.com/ubuntu/" ;;
+        $(( ${#MIRROR_NAMES[@]} + 3 ))) update_sources "$(get_regional)" ;;
+        $(( ${#MIRROR_NAMES[@]} + 4 )))
+            read -rp "Enter URL: " u
+            update_sources "$u"
+            ;;
+        $(( ${#MIRROR_NAMES[@]} + 5 )))
+            clear
+            echo "🇮🇷 IR Mirrors:"
+            curl -s "$MIRRORS_LIST_URL" | nl -ba
+            read -rp "Press Enter..."
+            ;;
+        $(( ${#MIRROR_NAMES[@]} + 6 ))) exit ;;
+        *)
+            echo "Invalid choice"
+            ;;
+    esac
 
     echo "${YELLOW}Running apt update...${NC}"
     apt update || echo "${RED}apt update failed${NC}"

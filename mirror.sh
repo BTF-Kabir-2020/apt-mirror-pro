@@ -37,43 +37,56 @@ declare -A MIRROR_URLS=(
 ["ParsVDS"]="https://ubuntu.parsvds.com/ubuntu/"
 )
 
-# Root check
+# ───────────────────────── ROOT CHECK ─────────────────────────
 [[ $EUID -ne 0 ]] && echo "${RED}Run as root${NC}" && exit 1
 
-# Create shortcut
+# ───────────────────────── SAFE LINK FIX ─────────────────────────
 create_command_link() {
-    if [[ ! -f "/usr/local/bin/mirror" ]]; then
-        ln -s "$(readlink -f "$0")" "/usr/local/bin/mirror"
-        chmod +x "/usr/local/bin/mirror"
-    fi
+    SCRIPT_PATH="$(realpath "$0")"
+
+    # remove broken symlink if exists
+    rm -f /usr/local/bin/mirror
+
+    ln -sf "$SCRIPT_PATH" /usr/local/bin/mirror
+    chmod +x "$SCRIPT_PATH"
 }
 
 create_command_link
 
-# Backup
+# ───────────────────────── BACKUP (ALWAYS) ─────────────────────────
 backup_sources() {
-    if [[ ! -f "$BACKUP_FILE" ]]; then
-        cp "$SOURCES_FILE" "$BACKUP_FILE"
-        echo "${GREEN}Backup created${NC}"
+    cp "$SOURCES_FILE" "$BACKUP_FILE"
+    echo "${GREEN}Backup saved -> $BACKUP_FILE${NC}"
+}
+
+# ───────────────────────── CONFIRMATION ─────────────────────────
+confirm_change() {
+    echo
+    echo "${YELLOW}⚠️ WARNING: You are about to modify system APT sources!${NC}"
+    echo "File: $SOURCES_FILE"
+    echo
+    read -rp "Continue? (y/N): " confirm
+
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "${RED}Cancelled by user.${NC}"
+        exit 0
     fi
 }
 
-# Get codename
+# ───────────────────────── SYSTEM INFO ─────────────────────────
 get_codename() {
     lsb_release -cs
 }
 
-# Validate URL
 validate_url() {
     [[ $1 =~ ^https?:// ]]
 }
 
-# Get current mirror
 get_current_mirror() {
     grep -m 1 "^deb " "$SOURCES_FILE" | awk '{print $2}'
 }
 
-# Update sources
+# ───────────────────────── UPDATE SOURCES ─────────────────────────
 update_sources() {
     local mirror=$1
     local codename=$(get_codename)
@@ -85,6 +98,7 @@ update_sources() {
 
     [[ $mirror != */ ]] && mirror="${mirror}/"
 
+    confirm_change
     backup_sources
 
     cat > "$SOURCES_FILE" <<EOF
@@ -101,12 +115,12 @@ EOF
     echo "${GREEN}Updated -> $mirror${NC}"
 }
 
-# Speed test (with timeout)
+# ───────────────────────── SPEED TEST ─────────────────────────
 speed_test() {
     curl --max-time 3 -o /dev/null -s -w "%{time_total}" "$1/dists/$(get_codename)/Release"
 }
 
-# Auto select best mirror
+# ───────────────────────── AUTO SELECT ─────────────────────────
 auto_select() {
     echo "${YELLOW}Selecting best mirror...${NC}"
 
@@ -140,13 +154,13 @@ auto_select() {
     update_sources "$best"
 }
 
-# Regional mirror
+# ───────────────────────── REGIONAL ─────────────────────────
 get_regional() {
-    cc=$(curl --max-time 3 -s https://ipapi.co/country)
+    cc=$(curl --max-time 3 -s https://ipapi.co/country || echo "us")
     echo "https://${cc,,}.archive.ubuntu.com/ubuntu/"
 }
 
-# Menu
+# ───────────────────────── MENU ─────────────────────────
 show_menu() {
     clear
     echo "${GREEN}APT Mirror Pro${NC}"
@@ -167,12 +181,10 @@ show_menu() {
     echo "$i) Exit"
 }
 
-# Main loop
+# ───────────────────────── MAIN LOOP ─────────────────────────
 while true; do
     show_menu
     read -r choice
-
-    max=$((${#MIRROR_NAMES[@]} + 6))
 
     if (( choice >= 1 && choice <= ${#MIRROR_NAMES[@]} )); then
         name="${MIRROR_NAMES[$((choice-1))]}"
@@ -192,7 +204,6 @@ while true; do
             5)
                 curl --max-time 5 -s "$MIRRORS_LIST_URL"
                 read -rp "Enter to continue..."
-                continue
                 ;;
             6) exit ;;
         esac
@@ -201,5 +212,5 @@ while true; do
     echo "${YELLOW}Updating package list...${NC}"
     apt update || echo "${RED}apt update failed${NC}"
 
-    read -rp "Enter to continue..."
+    read -rp "Press Enter to continue..."
 done

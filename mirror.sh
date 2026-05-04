@@ -1,19 +1,20 @@
 #!/bin/bash
 
-set -e
+# safer than set -e
+set -o pipefail
 
-# ───────────────────────── FILES ─────────────────────────
+# ───────── FILES ─────────
 SOURCES_FILE="/etc/apt/sources.list"
 BACKUP_FILE="/etc/apt/sources.list.bak"
 MIRRORS_LIST_URL="http://mirrors.ubuntu.com/IR.txt"
 
-# ───────────────────────── COLORS ─────────────────────────
+# ───────── COLORS ─────────
 GREEN=$'\e[0;32m'
 RED=$'\e[0;31m'
 YELLOW=$'\e[0;33m'
 NC=$'\e[0m'
 
-# ───────────────────────── MIRRORS ─────────────────────────
+# ───────── MIRRORS ─────────
 MIRROR_NAMES=(
 "ArvanCloud"
 "IranServer"
@@ -28,116 +29,118 @@ MIRROR_NAMES=(
 )
 
 declare -A MIRROR_URLS=(
-["ArvanCloud"]="https://mirror.arvancloud.ir/ubuntu/"
-["IranServer"]="https://mirror.iranserver.com/ubuntu/"
-["LinuxMirrors"]="https://repo.linuxmirrors.ir/ubuntu/"
-["Pishgaman"]="https://ubuntu.pishgaman.net/ubuntu/"
-["Sindad"]="https://ir.ubuntu.sindad.cloud/ubuntu/"
-["Shatel"]="https://ubuntu.shatel.ir/ubuntu/"
-["HostIran"]="https://ubuntu.hostiran.ir/ubuntu/"
-["IUT"]="https://repo.iut.ac.ir/repo/Ubuntu/"
-["Faraso"]="https://mirror.faraso.org/ubuntu/"
-["ParsVDS"]="https://ubuntu.parsvds.com/ubuntu/"
+["ArvanCloud"]="http://mirror.arvancloud.ir/ubuntu/"
+["IranServer"]="http://mirror.iranserver.com/ubuntu/"
+["LinuxMirrors"]="http://repo.linuxmirrors.ir/ubuntu/"
+["Pishgaman"]="http://ubuntu.pishgaman.net/ubuntu/"
+["Sindad"]="http://ir.ubuntu.sindad.cloud/ubuntu/"
+["Shatel"]="http://ubuntu.shatel.ir/ubuntu/"
+["HostIran"]="http://ubuntu.hostiran.ir/ubuntu/"
+["IUT"]="http://repo.iut.ac.ir/repo/Ubuntu/"
+["Faraso"]="http://mirror.faraso.org/ubuntu/"
+["ParsVDS"]="http://ubuntu.parsvds.com/ubuntu/"
 )
 
-OFFICIAL="https://archive.ubuntu.com/ubuntu/"
+OFFICIAL="http://archive.ubuntu.com/ubuntu/"
 
-# ───────────────────────── ROOT CHECK ─────────────────────────
+# ───────── ROOT CHECK ─────────
 [[ $EUID -ne 0 ]] && echo "${RED}Run as root${NC}" && exit 1
 
-# ───────────────────────── BACKUP ─────────────────────────
+# ───────── BACKUP ─────────
 backup_sources() {
-    [[ -f "$BACKUP_FILE" ]] || cp "$SOURCES_FILE" "$BACKUP_FILE"
+    if [[ ! -f "$BACKUP_FILE" ]]; then
+        cp "$SOURCES_FILE" "$BACKUP_FILE"
+        echo "${GREEN}✔ Backup created${NC}"
+    fi
 }
 
-# ───────────────────────── RESET ─────────────────────────
+# ───────── RESET ─────────
 reset_sources() {
-    echo "${YELLOW}Resetting APT sources...${NC}"
+    echo "${YELLOW}Resetting sources...${NC}"
 
     if [[ -f "$BACKUP_FILE" ]]; then
         cp "$BACKUP_FILE" "$SOURCES_FILE"
-        echo "${GREEN}✔ Restored from backup${NC}"
+        echo "${GREEN}✔ Restored backup${NC}"
     else
-        echo "${YELLOW}⚠ No backup found${NC}"
-        echo "This usually means first run or backup was deleted."
-        read -rp "Switch to Official Ubuntu? (y/N): " r
-
-        [[ "$r" =~ ^[Yy]$ ]] || { echo "Cancelled"; exit 0; }
-
+        echo "${YELLOW}No backup → using official${NC}"
         update_sources "$OFFICIAL"
     fi
 
-    apt update || true
+    apt update
 }
 
-# ───────────────────────── CONFIRM ─────────────────────────
-confirm_change() {
-    echo
-    echo "${YELLOW}⚠ You are about to modify system APT sources${NC}"
-    read -rp "Continue? (y/N): " c
-    [[ ! "$c" =~ ^[Yy]$ ]] && echo "${RED}Cancelled${NC}" && exit 0
-}
-
-# ───────────────────────── SYSTEM ─────────────────────────
+# ───────── SYSTEM ─────────
 get_codename() {
-    lsb_release -cs
-}
-
-validate_url() {
-    [[ $1 =~ ^https?:// ]]
+    lsb_release -cs 2>/dev/null || echo "jammy"
 }
 
 get_current_mirror() {
     grep -m1 "^deb " "$SOURCES_FILE" | awk '{print $2}'
 }
 
-# ───────────────────────── UPDATE ─────────────────────────
+validate_url() {
+    [[ $1 =~ ^https?:// ]]
+}
+
+# ───────── UPDATE ─────────
 update_sources() {
     local mirror=$1
-    local codename
+    local codename=$(get_codename)
 
-    codename=$(get_codename)
-
-    validate_url "$mirror" || { echo "${RED}Invalid URL${NC}"; return 1; }
+    validate_url "$mirror" || {
+        echo "${RED}Invalid URL${NC}"
+        return 1
+    }
 
     [[ $mirror != */ ]] && mirror="${mirror}/"
 
-    confirm_change
+    echo "${YELLOW}Switching to:${NC} $mirror"
     backup_sources
 
     cat > "$SOURCES_FILE" <<EOF
 deb $mirror $codename main restricted universe multiverse
 deb $mirror $codename-updates main restricted universe multiverse
 deb $mirror $codename-backports main restricted universe multiverse
+
 deb-src $mirror $codename main restricted universe multiverse
 deb-src $mirror $codename-updates main restricted universe multiverse
 deb-src $mirror $codename-backports main restricted universe multiverse
 
-deb https://security.ubuntu.com/ubuntu $codename-security main restricted universe multiverse
+deb http://security.ubuntu.com/ubuntu $codename-security main restricted universe multiverse
+deb-src http://security.ubuntu.com/ubuntu $codename-security main restricted universe multiverse
 EOF
 
-    echo "${GREEN}Updated → $mirror${NC}"
+    echo "${GREEN}✔ Updated successfully${NC}"
 }
 
-# ───────────────────────── SPEED TEST ─────────────────────────
+# ───────── SPEED TEST ─────────
 speed_test() {
-    curl -s -o /dev/null -w "%{time_total}" \
-    --max-time 3 "$1/dists/$(get_codename)/Release"
+    local url="$1/dists/$(get_codename)/Release"
+
+    curl -L -s -o /dev/null \
+        --connect-timeout 2 \
+        --max-time 5 \
+        -w "%{time_total}" "$url"
 }
 
-# ───────────────────────── AUTO SELECT ─────────────────────────
+# ───────── AUTO SELECT ─────────
 auto_select() {
-    echo "${YELLOW}Selecting best mirror...${NC}"
+    echo "${YELLOW}Finding fastest mirror...${NC}"
 
     local best=""
     local best_time=999
 
-    for m in "${MIRROR_URLS[@]}"; do
-        echo -n "Testing $m ... "
+    for name in "${MIRROR_NAMES[@]}"; do
+        m="${MIRROR_URLS[$name]}"
+
+        echo -n "Testing $name ... "
 
         t=$(speed_test "$m")
 
-        [[ -z "$t" ]] && { echo "${RED}FAIL${NC}"; continue; }
+        if [[ -z "$t" || "$t" == "0.000" ]]; then
+            echo "${RED}FAIL${NC}"
+            continue
+        fi
 
         echo "${GREEN}${t}s${NC}"
 
@@ -147,22 +150,25 @@ auto_select() {
         fi
     done
 
-    [[ -z "$best" ]] && echo "${RED}No mirror found${NC}" && return 1
+    if [[ -z "$best" ]]; then
+        echo "${RED}No working mirror found${NC}"
+        return 1
+    fi
 
-    echo "${GREEN}Best Mirror: $best${NC}"
+    echo "${GREEN}Best: $best (${best_time}s)${NC}"
     update_sources "$best"
 }
 
-# ───────────────────────── REGIONAL ─────────────────────────
+# ───────── REGIONAL ─────────
 get_regional() {
     cc=$(curl -s --max-time 3 https://ipapi.co/country || echo "us")
-    echo "https://${cc,,}.archive.ubuntu.com/ubuntu/"
+    echo "http://${cc,,}.archive.ubuntu.com/ubuntu/"
 }
 
-# ───────────────────────── MENU ─────────────────────────
+# ───────── MENU ─────────
 show_menu() {
     clear
-    echo "${GREEN}APT Mirror Pro${NC}"
+    echo "${GREEN}APT Mirror Pro (Fixed)${NC}"
     echo "Current: $(get_current_mirror)"
     echo
 
@@ -174,7 +180,7 @@ show_menu() {
 
     echo "$i) Auto"
     ((i++))
-    echo "$i) Official Ubuntu"
+    echo "$i) Official"
     ((i++))
     echo "$i) Reset"
     ((i++))
@@ -185,7 +191,7 @@ show_menu() {
     echo "$i) Exit"
 }
 
-# ───────────────────────── MAIN LOOP ─────────────────────────
+# ───────── MAIN LOOP ─────────
 while true; do
     show_menu
     read -r choice
@@ -193,7 +199,6 @@ while true; do
     if (( choice >= 1 && choice <= ${#MIRROR_NAMES[@]} )); then
         name="${MIRROR_NAMES[$((choice-1))]}"
         update_sources "${MIRROR_URLS[$name]}"
-
     else
         offset=$((choice - ${#MIRROR_NAMES[@]}))
 
@@ -207,14 +212,14 @@ while true; do
                 ;;
             5)
                 curl -s "$MIRRORS_LIST_URL"
-                read -rp "Press Enter..."
+                read -rp "Enter..."
                 ;;
             6) exit ;;
         esac
     fi
 
     echo "${YELLOW}Running apt update...${NC}"
-    apt update || echo "${RED}apt update failed${NC}"
+    apt update || echo "${RED}apt failed${NC}"
 
-    read -rp "Press Enter..."
+    read -rp "Enter..."
 done

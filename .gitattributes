@@ -1,0 +1,5 @@
+# Normalize text files; override below for specific types
+* text=auto
+
+# Bash must stay LF (Linux / servers / CI)
+*.sh text eol=lf

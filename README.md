@@ -1,6 +1,6 @@
 # 🔰 APT Mirror Pro
 
-**به فارسی:** اسکریپت Bash برای عوض کردن **آینهٔ مخازن APT** روی اوبونتو — مخصوصاً وقتی `apt update` کند است یا باید از آینهٔ داخل ایران (مثل اروان) استفاده کنید.  
+**به فارسی:** اسکریپت Bash برای عوض کردن **آینهٔ مخازن APT** روی اوبونتو — مخصوصاً وقتی `apt update` کند است یا باید از آینهٔ داخل ایران استفاده کنید.  
 **In English:** A Bash tool to switch Ubuntu APT mirrors for faster or more reliable `apt` on slow or restricted networks.
 
 ![Stars](https://img.shields.io/github/stars/BTF-Kabir-2020/apt-mirror-pro?style=for-the-badge)
@@ -19,21 +19,22 @@
 ## 🇮🇷 راهنمای فارسی
 
 ### این برنامه دقیقاً چه می‌کند؟
-فایل **`mirror.sh`** منویی باز می‌کند؛ تو یکی از **آینه‌های از پیش تعریف‌شده** (از جمله چند آینهٔ داخل ایران) را انتخاب می‌کنی، یا آدرس دلخواه می‌دهی. اسکریپت فایل **`/etc/apt/sources.list`** را طوری می‌نویسد که APT از همان سرور بسته بگیرد. می‌توانی با گزینهٔ **Auto** سریع‌ترین آینه از لیست را هم امتحان کنی.
+فایل **`mirror.sh`** یک منوی تعاملی باز می‌کند. می‌توانی یکی از **۲۶+ آینهٔ از پیش تعریف‌شده** (ایران و چند مورد دیگر) را انتخاب کنی، با **Auto** بهترین آینه را پیدا کنی، آدرس **Custom** بدهی، یا از **Manage backups** نسخهٔ قبلی را برگردانی.
+
+اسکریپت بسته به سیستم، یا **`/etc/apt/sources.list`** (legacy) یا **`/etc/apt/sources.list.d/ubuntu.sources`** (deb822 در اوبونتو ۲۴.۰۴+) را می‌نویسد.
 
 ### چرا لازم می‌شود؟
-در بعضی شبکه‌ها (مثلاً محدودیت دسترسی به سرورهای خارجی یا مسیریابی کند) اوبونتو پیش‌فرض خوب کار نمی‌کند. با عوض کردن آینه به سروری که از **مسیر شما** در دسترس است، معمولاً `apt update` و نصب بسته‌ها راحت‌تر می‌شود.
+در بعضی شبکه‌ها (محدودیت دسترسی به سرورهای خارجی یا مسیریابی کند) اوبونتو پیش‌فرض خوب کار نمی‌کند. با آینهٔ نزدیک‌تر، معمولاً `apt update` و نصب بسته‌ها راحت‌تر می‌شود.
 
 ### نصب و اجرا
 
-**۱) نصب سریع (یک خط، مستقیم از گیت‌هاب)**  
-*نیاز داری به اینترنت و آدرس زیر دسترسی داشته باشی؛ فقط از منبعی که به آن اعتماد داری اجرا کن.*
+**۱) نصب سریع (یک خط)**
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/BTF-Kabir-2020/apt-mirror-pro/main/mirror.sh)
 ```
 
-**۲) نصب دستی (امن‌تر — اول کلون، بعد اجرا)**
+**۲) نصب دستی (امن‌تر)**
 
 ```bash
 git clone https://github.com/BTF-Kabir-2020/apt-mirror-pro.git
@@ -42,88 +43,108 @@ chmod +x mirror.sh
 sudo ./mirror.sh
 ```
 
-باید **حتماً با کاربر روت** اجرا شود (`sudo`). اولین باری که با روت اجرا کنی، اگر از قبل نباشد، دستور **`mirror`** در مسیر `/usr/local/bin/mirror` به همین اسکریپت وصل می‌شود؛ بعد می‌توانی بزنی: `sudo mirror`.
+باید **با root** اجرا شود (`sudo`). در اولین اجرا، در صورت نبودن قبلی، دستور **`mirror`** به `/usr/local/bin/mirror` وصل می‌شود.
 
 ### بعد از اجرا چه اتفاقی می‌افتد؟
-- یک **پشتیبان یک‌بار** از `sources.list` فعلی گرفته می‌شود (برای گزینهٔ **Reset**).
-- روی **اوبونتو ۲۴.۰۴ به بعد** اگر فایل **`ubuntu.sources`** (فرمت جدید deb822) باشد، یک نسخهٔ پشتیبان از آن ذخیره و خود فایل حذف می‌شود تا با `sources.list` جدید **قاطی نشود** (همان مشکلی که قبلاً فقط با ویرایش `sources.list` حل نمی‌شد).
-- کش APT پاک و دوباره **`apt update`** اجرا می‌شود.
+- **پشتیبان اولیه** از `sources.list` برای گزینهٔ **Reset** (یک‌بار).
+- **پشتیبان با timestamp** در هر تغییر + **snapshot کامل** از `sources.list` و `sources.list.d` در `/etc/apt-mirror-pro/backups/`.
+- روی **اوبونتو ۲۴.۰۴+**: اگر `ubuntu.sources` وجود داشته باشد، همان فایل با فرمت **deb822** به‌روز می‌شود (نه حذف ساده). در حالت legacy، `ubuntu.sources` پشتیبان و حذف می‌شود تا تداخل نداشته باشد.
+- قبل از `apt update`، در صورت قفل بودن APT صبر می‌کند؛ اگر `apt update` شکست بخورد، می‌توانی snapshot را **rollback** کنی.
+- کش APT پاک و **`apt update`** اجرا می‌شود.
 
-### گزینه‌های مهم منو (خلاصه)
-| گزینه | معنی ساده |
-|--------|-----------|
-| نام آینه‌ها (مثل ArvanCloud) | همان آینه را روی سیستم فعال می‌کند |
-| **Auto** | چند آینه را با `curl` تست می‌کند و سریع‌ترین را برمی‌دارد |
-| **Official** | مخازن رسمی اوبونتو (نیاز به دسترسی مناسب به اینترنت جهانی) |
-| **Regional** | آینهٔ کشور از روی سرویس `ipapi.co`؛ اگر تشخیص نشود پیش‌فرض **`ir`** می‌شود؛ باز هم به اینترنت جهانی وابسته است |
-| **Reset** | برمی‌گرداند به پشتیبان اولیهٔ `sources.list` و در صورت وجود، `ubuntu.sources` را هم برمی‌گرداند |
-| **Custom** | خودت آدرس پایهٔ آینه را می‌نویسی |
-| **Show IR list** | لیستی از گیت‌هاب اوبونتو می‌گیرد؛ ممکن است بدون اینترنت جهانی باز نشود |
+### گزینه‌های مهم منو
+
+| گزینه | معنی |
+|--------|------|
+| نام آینه‌ها | فعال‌سازی همان آینه (با اعتبارسنجی قبل از اعمال) |
+| **Auto (smart test)** | تست suiteها، latency، سرعت، امتیاز؛ انتخاب بهترین |
+| **Official** | مخازن رسمی (`security.ubuntu.com` برای security) |
+| **Regional** | آینهٔ کشور با `ipapi.co` (پیش‌فرض `ir`) |
+| **Reset** | بازگشت به پشتیبان اولیه |
+| **Custom** | آدرس دلخواه |
+| **Show IR list** | لیست آینه‌های ایران از mirrors.ubuntu.com |
+| **Manage backups** | لیست و بازگردانی پشتیبان‌های timestamp |
+| **Exit** | خروج |
+
+### آینهٔ سفارشی
+فایل `/etc/apt-mirror-pro/custom_mirrors.conf` — هر خط:
+
+```text
+نام|https://mirror.example.com/ubuntu/|
+نام-split|https://main.example.com/ubuntu/|https://sec.example.com/ubuntu-security/
+```
+
+ستون سوم (security) اختیاری است. برای **شاتل** از قبل split جدا (`mirror.shatel.ir` + `ubuntu-security`) پیکربندی شده.
+
+### فایل‌های پیکربندی
+
+| مسیر | کاربرد |
+|------|--------|
+| `/etc/apt-mirror-pro/custom_mirrors.conf` | آینه‌های اضافهٔ شما |
+| `/etc/apt-mirror-pro/state.env` | آخرین نتیجهٔ Auto |
+| `/etc/apt-mirror-pro/backups/` | snapshot کامل قبل از هر تغییر |
+| `/etc/apt/sources.list.bak` | پشتیبان اولیه برای Reset |
 
 ### اینترنت ایران / شبکه ملی
-- گزینه‌های **Official**، **Regional** و **Show IR list** معمولاً به سرورهای خارج از ایران یا دامنه‌های جهانی وابسته‌اند.
-- برای محیطی که فقط آینهٔ داخلی دارد، از **همان لیست آینه‌های ایران** یا **Auto** استفاده کن (فقط به همان URLهای داخل اسکریپت وصل می‌شود).
+- **Official**، **Regional** و **Show IR list** به endpointهای جهانی وابسته‌اند.
+- **لیست آینه‌های ایران** و **Auto** فقط به URLهای داخل اسکریپت (و custom) وصل می‌شوند.
 
 ### امنیت و بازگشت
-- فقط آدرس‌هایی که با `http://` یا `https://` شروع شوند پذیرفته می‌شوند.
-- با **Reset** می‌توانی به وضعیت قبل از اولین تغییر (طبق فایل پشتیبان) برگردی.
+- فقط URLهای `http://` / `https://` پذیرفته می‌شوند.
+- **Reset** → وضعیت اولیه؛ **Manage backups** → هر پشتیبان timestamp؛ پس از شکست `apt update` → rollback از snapshot.
 
 ### پیش‌نیازها
-- اوبونتو (تمرکز اصلی روی اوبونتو؛ دبیان شبیه ممکن است کار کند ولی تست deb822 برای اوبونتو است)
-- **Bash نسخه ۴ به بالا**
-- دسترسی **root** (`sudo`)
-- **`curl`** روی سیستم
-- **`lsb_release`** اختیاری است؛ اگر نباشد نسخهٔ سیستم از **`/etc/os-release`** خوانده می‌شود
+- اوبونتو (تمرکز اصلی؛ deb822 برای ۲۴.۰۴+)
+- **Bash 4+**، **root** (`sudo`)
+- **`curl`** (در صورت نبودن، اسکریپت سعی می‌کند نصب کند)
+- **`lsb_release`** اختیاری — در غیر این صورت از `/etc/os-release`
 
 ### مشارکت و مجوز
-مشارکت در پروژه خوش‌آمد است؛ جزئیات در [CONTRIBUTING.md](CONTRIBUTING.md). مجوز: **MIT** — فایل [LICENSE](LICENSE).
+[CONTRIBUTING.md](CONTRIBUTING.md) — مجوز **MIT**: [LICENSE](LICENSE).
 
 ---
 
 ## English
 
-**APT Mirror Pro** is a Bash menu-driven utility to switch Ubuntu APT mirrors, speed-test them (**Auto**), use official/regional/custom URLs, and **Reset** to a saved `sources.list`. On **Ubuntu 24.04+** it backs up and removes **`/etc/apt/sources.list.d/ubuntu.sources`** when needed so APT does not merge conflicting deb822 sources with `sources.list`. It runs `apt clean`, clears list cache, then `apt update`. First **root** run may install **`/usr/local/bin/mirror`** pointing at this script.
+**APT Mirror Pro** is a menu-driven Bash utility to switch Ubuntu APT mirrors: **26+ preset mirrors**, **smart Auto** (suite checks, latency, speed scoring), **deb822** on Ubuntu 24.04+, **backup manager**, **full snapshots with rollback**, and **custom mirror config**.
 
-### Features (short)
+### Features
 
-- Iranian + official + custom mirrors, **Auto** latency test, **Regional** (ipapi.co, fallback `ir`)
-- Backup / **Reset**, deb822 handling, cache refresh, URL validation
+- Iranian mirrors (ArvanCloud, IranServer, Shatel split, IUT, Petiak, ITO, Runflare, …)
+- **Auto**: tests `InRelease` suites (main, updates, backports, security), speed sample, arch-aware `Packages.gz` validation
+- **deb822**: writes `ubuntu.sources` when present; legacy mode uses `sources.list`
+- **Shatel split**: separate main and `ubuntu-security` URLs
+- **Backups**: initial `.bak` for Reset, timestamped copies, full `sources.list.d` snapshots
+- **Custom mirrors**: `/etc/apt-mirror-pro/custom_mirrors.conf`
+- **APT lock wait**; optional rollback if `apt update` fails after apply
+- **`/usr/local/bin/mirror`** symlink on first root run
 
 ### Installation
-
-Quick (trusted source only):
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/BTF-Kabir-2020/apt-mirror-pro/main/mirror.sh)
 ```
 
-Manual:
+Or clone, `chmod +x mirror.sh`, `sudo ./mirror.sh`.
 
-```bash
-git clone https://github.com/BTF-Kabir-2020/apt-mirror-pro.git
-cd apt-mirror-pro
-chmod +x mirror.sh
-sudo ./mirror.sh
-```
+### How it works
 
-### How it works (technical)
-
-1. Optional **Auto**: `curl` timing to each mirror’s `dists/<codename>/Release`.  
-2. Writes `sources.list` (main, updates, backports, security). Non-official mirrors use the **same base** for `-security`; official layout uses `security.ubuntu.com`.  
-3. Ubuntu 24.04+: backup then remove `ubuntu.sources` (restore on **Reset** if backup exists).  
-4. `apt clean`, wipe `/var/lib/apt/lists/*`, `apt update`.  
-5. Codename: `lsb_release -cs` or `VERSION_CODENAME` from `/etc/os-release`.
+1. **Auto** (optional): score mirrors; pick lowest score (latency + speed).
+2. **Validate** mirror (`Packages.gz` size) before writing sources.
+3. Write **deb822** or **legacy** `sources.list`; non-official mirrors usually use the **same base** for `-security` (except split mirrors like Shatel).
+4. `apt clean`, clear `/var/lib/apt/lists/*`, `apt update` (waits for APT locks).
+5. Codename from `lsb_release -cs` or `/etc/os-release`.
 
 ### Network
 
-**Official**, **Regional**, and **Show IR list** need public Ubuntu-related endpoints. **Iranian mirrors** + **Auto** only use URLs embedded in the script.
+**Official**, **Regional**, and **Show IR list** need public endpoints. **Iranian mirrors**, **Auto**, and **custom** entries use only configured URLs.
 
 ### Requirements
 
-Ubuntu-focused, **Bash 4+**, **root**, **curl**, `lsb_release` optional.
+Ubuntu-focused, **Bash 4+**, **root**, **curl** (auto-installed if missing), `lsb_release` optional.
 
 ### License & contributing
 
-**MIT** — see [LICENSE](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md).
+**MIT** — [LICENSE](LICENSE). [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---

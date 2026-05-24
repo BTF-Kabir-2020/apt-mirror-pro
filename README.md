@@ -57,7 +57,7 @@ sudo ./mirror.sh
 | گزینه | معنی |
 |--------|------|
 | نام آینه‌ها | فعال‌سازی همان آینه (با اعتبارسنجی قبل از اعمال) |
-| **Auto (smart test)** | تست suiteها، latency، سرعت، امتیاز؛ انتخاب بهترین |
+| **Auto (smart test)** | تست موازی suiteها + latency + سرعت (~۲ ثانیه برای هر آینه)؛ انتخاب بهترین |
 | **Official** | مخازن رسمی (`security.ubuntu.com` برای security) |
 | **Regional** | آینهٔ کشور با `ipapi.co` (پیش‌فرض `ir`) |
 | **Reset** | بازگشت به پشتیبان اولیه |
@@ -85,6 +85,22 @@ sudo ./mirror.sh
 | `/etc/apt-mirror-pro/backups/` | snapshot کامل قبل از هر تغییر |
 | `/etc/apt/sources.list.bak` | پشتیبان اولیه برای Reset |
 
+### Auto (تست هوشمند آینه)
+- برای هر آینه، چهار suite (`main`، `updates`، `backports`، `security`) به‌همراه **latency** و **نمونهٔ سرعت** (۲۵۶KB از `Packages.gz`) **هم‌زمان** بررسی می‌شوند.
+- بودجهٔ زمانی هدف: حدود **۲ ثانیه برای هر آینه** (آینهٔ قطع دیگر ده‌ها ثانیه معطل نمی‌کند).
+- در حین تست می‌توانی **Enter** بزنی تا آینهٔ فعلی رد شود.
+- امتیاز از ترکیب تأخیر و سرعت محاسبه می‌شود؛ سه آینهٔ برتر نمایش داده می‌شود و بهترین اعمال می‌شود.
+- اعتبارسنجی عمیق‌تر (`Packages.gz` کامل) فقط **قبل از اعمال** آینه انجام می‌شود، نه در مرحلهٔ Auto.
+
+**تنظیم سرعت تست** (بالای `mirror.sh`):
+
+| متغیر | پیش‌فرض | معنی |
+|--------|---------|------|
+| `PROBE_MIRROR_MAX` | `2` | بودجهٔ زمانی هدف هر آینه (ثانیه) |
+| `PROBE_CONNECT` | `1` | timeout اتصال هر درخواست probe |
+| `PROBE_MAX` | `2` | حداکثر زمان هر درخواست curl در probe |
+| `PROBE_SPEED_BYTES` | `262144` | حجم نمونه برای اندازه‌گیری سرعت (بایت) |
+
 ### اینترنت ایران / شبکه ملی
 - **Official**، **Regional** و **Show IR list** به endpointهای جهانی وابسته‌اند.
 - **لیست آینه‌های ایران** و **Auto** فقط به URLهای داخل اسکریپت (و custom) وصل می‌شوند.
@@ -106,12 +122,12 @@ sudo ./mirror.sh
 
 ## English
 
-**APT Mirror Pro** is a menu-driven Bash utility to switch Ubuntu APT mirrors: **26+ preset mirrors**, **smart Auto** (suite checks, latency, speed scoring), **deb822** on Ubuntu 24.04+, **backup manager**, **full snapshots with rollback**, and **custom mirror config**.
+**APT Mirror Pro** is a menu-driven Bash utility to switch Ubuntu APT mirrors: **26+ preset mirrors**, **fast parallel Auto** (~2s per mirror probe), **deb822** on Ubuntu 24.04+, **backup manager**, **full snapshots with rollback**, and **custom mirror config**.
 
 ### Features
 
 - Iranian mirrors (ArvanCloud, IranServer, Shatel split, IUT, Petiak, ITO, Runflare, …)
-- **Auto**: tests `InRelease` suites (main, updates, backports, security), speed sample, arch-aware `Packages.gz` validation
+- **Auto**: parallel probe of all four `InRelease` suites plus latency and a 256KB speed sample (~2s budget per mirror); full `Packages.gz` validation runs only when applying a mirror
 - **deb822**: writes `ubuntu.sources` when present; legacy mode uses `sources.list`
 - **Shatel split**: separate main and `ubuntu-security` URLs
 - **Backups**: initial `.bak` for Reset, timestamped copies, full `sources.list.d` snapshots
@@ -129,11 +145,15 @@ Or clone, `chmod +x mirror.sh`, `sudo ./mirror.sh`.
 
 ### How it works
 
-1. **Auto** (optional): score mirrors; pick lowest score (latency + speed).
+1. **Auto** (optional): parallel per-mirror probes (~2s each), score by latency + speed, pick the best.
 2. **Validate** mirror (`Packages.gz` size) before writing sources.
 3. Write **deb822** or **legacy** `sources.list`; non-official mirrors usually use the **same base** for `-security` (except split mirrors like Shatel).
 4. `apt clean`, clear `/var/lib/apt/lists/*`, `apt update` (waits for APT locks).
 5. Codename from `lsb_release -cs` or `/etc/os-release`.
+
+### Auto probe tuning
+
+At the top of `mirror.sh`: `PROBE_MIRROR_MAX` (default `2`), `PROBE_CONNECT` (`1`), `PROBE_MAX` (`2`), `PROBE_SPEED_BYTES` (`262144`). Lower `PROBE_MAX` for faster scans with slightly less accurate speed readings.
 
 ### Network
 

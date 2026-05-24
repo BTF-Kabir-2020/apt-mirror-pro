@@ -19,6 +19,10 @@ BACKUP_SNAPSHOT_DIR="$CONFIG_DIR/backups"
 UA="Mozilla/5.0 (X11; Ubuntu; Linux x86_64)"
 MAX_RETRIES=2
 VALIDATION_RETRIES=3
+PROBE_MIRROR_MAX=2
+PROBE_CONNECT=1
+PROBE_MAX=2
+PROBE_SPEED_BYTES=262144
 
 # ───────── COLORS ─────────
 GREEN=$'\e[0;32m'
@@ -206,6 +210,16 @@ check_suite() {
         return $?
     fi
 
+    [[ "$code" == "200" ]]
+}
+
+check_suite_probe() {
+    local base="$1" suite="$2"
+    local url="${base%/}/dists/$suite/InRelease"
+    local code
+
+    code=$(curl -4 --ipv4 -A "$UA" -s -o /dev/null -w "%{http_code}" \
+        --connect-timeout "$PROBE_CONNECT" --max-time "$PROBE_MAX" -L "$url" 2>/dev/null || echo "000")
     [[ "$code" == "200" ]]
 }
 
@@ -664,53 +678,72 @@ test_mirror_score() {
     local sec_base="${2:-}"
     local codename arch
     local lat_ms speed_kb score latency stats bytes time code pkg_url base_dist
+    local tmpdir entry b s fail=0 pid pids=() range_end
 
     codename=$(get_codename)
     arch=$(get_arch)
     base_dist="$base/dists/$codename"
     sec_base="${sec_base%/}"
+    range_end=$((PROBE_SPEED_BYTES - 1))
 
-    if is_mirror_syncing "$base"; then
-        echo "syncing"
-        return 1
-    fi
-
-    if ! check_suite "$base" "$codename" \
-        || ! check_suite "$base" "$codename-updates" \
-        || ! check_suite "$base" "$codename-backports"; then
+    tmpdir=$(mktemp -d 2>/dev/null) || {
         echo "unreachable"
         return 1
-    fi
+    }
 
-    if [[ -n "$sec_base" ]]; then
-        check_suite "$sec_base" "$codename-security" || {
-            echo "unreachable"
-            return 1
-        }
-    elif ! check_suite "$base" "$codename-security"; then
-        echo "unreachable"
-        return 1
-    fi
+    for entry in \
+        "$base|$codename" \
+        "$base|$codename-updates" \
+        "$base|$codename-backports" \
+        "${sec_base:-$base}|$codename-security"; do
+        b="${entry%%|*}"
+        s="${entry##*|}"
+        (
+            check_suite_probe "$b" "$s" || exit 1
+        ) &
+        pids+=($!)
+    done
 
-    latency=$(LC_ALL=C curl -4 --ipv4 -A "$UA" -s -L --connect-timeout 6 \
-        -w "%{time_total}" -o /dev/null "$base_dist/InRelease" 2>/dev/null || echo "0")
-    lat_ms=$(LC_ALL=C awk "BEGIN {printf \"%d\", ${latency:-0}*1000}")
+    (
+        LC_ALL=C curl -4 --ipv4 -A "$UA" -s -L \
+            --connect-timeout "$PROBE_CONNECT" --max-time "$PROBE_MAX" \
+            -w "%{time_total}" -o /dev/null "$base_dist/InRelease" 2>/dev/null \
+            >"$tmpdir/lat" || echo "0" >"$tmpdir/lat"
+    ) &
+    pids+=($!)
 
     pkg_url="$base_dist/main/binary-${arch}/Packages.gz"
-    stats=$(LC_ALL=C curl -4 --ipv4 -A "$UA" -s -L --connect-timeout 8 --max-time 12 \
-        --range 0-2097152 -o /dev/null -w "%{size_download} %{time_total} %{http_code}" \
-        "$pkg_url" 2>/dev/null || echo "0 0 000")
+    (
+        LC_ALL=C curl -4 --ipv4 -A "$UA" -s -L \
+            --connect-timeout "$PROBE_CONNECT" --max-time "$PROBE_MAX" \
+            --range "0-$range_end" -o /dev/null \
+            -w "%{size_download} %{time_total} %{http_code}" \
+            "$pkg_url" 2>/dev/null >"$tmpdir/spd" || echo "0 0 000" >"$tmpdir/spd"
+    ) &
+    pids+=($!)
+
+    for pid in "${pids[@]}"; do
+        wait "$pid" || fail=1
+    done
+
+    latency=$(<"$tmpdir/lat")
+    stats=$(<"$tmpdir/spd")
+    rm -rf "$tmpdir"
+
+    if [[ $fail -ne 0 ]]; then
+        echo "unreachable"
+        return 1
+    fi
+
+    lat_ms=$(LC_ALL=C awk "BEGIN {printf \"%d\", ${latency:-0}*1000}")
 
     bytes=$(awk '{print $1}' <<<"$stats")
     time=$(awk '{print $2}' <<<"$stats")
     code=$(awk '{print $3}' <<<"$stats")
 
     if [[ "$code" != "200" && "$code" != "206" ]] || [[ "${bytes:-0}" -lt 1000 ]]; then
-        stats=$(LC_ALL=C curl -4 --ipv4 -A "$UA" -s -L --connect-timeout 6 --max-time 8 \
-            -o /dev/null -w "%{size_download} %{time_total}" \
-            "$base_dist/InRelease" 2>/dev/null || echo "0 0")
-        bytes=$(awk '{print $1}' <<<"$stats")
-        time=$(awk '{print $2}' <<<"$stats")
+        echo "slow:0"
+        return 1
     fi
 
     speed_kb=0

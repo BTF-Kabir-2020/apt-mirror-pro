@@ -24,7 +24,7 @@
 - انتخاب از **۲۸+ آینهٔ از پیش تعریف‌شده**، **Auto** برای پیدا کردن بهترین آینه، **Custom**، و **Manage backups**
 - زیرده **DNS tools**: تنظیم/بازگردانی DNS، نمایش وضعیت، تست اتصال، و بنچمارک resolverها
 
-بسته به سیستم، یا `/etc/apt/sources.list` یا `/etc/apt/sources.list.d/ubuntu.sources` (deb822 در اوبونتو ۲۴.۰۴+) نوشته می‌شود. برای DNS از `systemd-resolved` یا `/etc/resolv.conf` پشتیبانی می‌شود.
+بسته به سیستم، یا `/etc/apt/sources.list` یا `/etc/apt/sources.list.d/ubuntu.sources` / `debian.sources` (deb822 در اوبونتو ۲۴.۰۴+ و دبیان ۱۲+) نوشته می‌شود. اسکریپت همیشه **فقط یک کانال** را فعال نگه می‌دارد تا هشدار `configured multiple times` بعد از نصب/restore نیاید. برای DNS از `systemd-resolved` یا `/etc/resolv.conf` پشتیبانی می‌شود.
 
 ### نصب و اجرا
 
@@ -62,7 +62,8 @@ sudo ./mirror.sh
 
 - پشتیبان DNS در `/etc/apt-mirror-pro/dns-backups/`
 - بنچمارک با `dig` (بستهٔ `dnsutils` در صورت نیاز نصب می‌شود)
-- هدف‌های پیش‌فرض بنچمارک/تست: `github.com`، `registry-1.docker.io`، `pypi.org`، `registry.npmjs.org`
+- هدف‌های پیش‌فرض تست اتصال: آینه‌های منطقه‌ای (مثل Arvan/IUT) + registryهای رایج؛ روی نت محدود هم معنی‌دارتر است
+- هدف‌های بنچمارک DNS: `github.com`، `registry-1.docker.io`، `pypi.org`، `registry.npmjs.org` (قابل سفارشی‌سازی)
 
 سرویس‌های DNS شخص ثالث مستقل‌اند؛ قبل از استفاده در محیط حساس، خودتان بررسی کنید.
 
@@ -102,16 +103,18 @@ sudo ./mirror.sh
 
 - 28+ preset mirrors (including Liara split-security and Amin IDC)
 - **Auto**: parallel suite + latency + speed probe; apply best
-- **deb822** on Ubuntu 24.04+; legacy `sources.list` otherwise
+- **deb822** on Ubuntu 24.04+ / Debian 12+ (`ubuntu.sources` / `debian.sources`); legacy `sources.list` otherwise
+- Keeps a **single APT channel** active (avoids `configured multiple times` warnings after install/restore)
 - Backups, snapshots, rollback, custom mirrors
 - **DNS tools**: set / restore / status / connectivity test / grouped benchmark
 - Safe `mirror` symlink only when run from a real script path (not `bash <(curl …)`)
+- Works better on restricted networks: HTTP geo fallbacks, mixed connectivity targets, short apt timeouts
 
 ### DNS tools
 
 Presets are grouped as **Developer**, **ISP**, **National**, and **Public** for package registries and common APIs. Benchmarks need `dig` (`dnsutils`). Third-party DNS services are independent; choose what fits your network and risk model.
 
-Default probe targets: `github.com`, `registry-1.docker.io`, `pypi.org`, `registry.npmjs.org`.
+Connectivity defaults mix regional mirrors with common registries; DNS benchmark targets remain customizable.
 
 ### Install
 

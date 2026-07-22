@@ -10,6 +10,8 @@ SOURCES_FILE="/etc/apt/sources.list"
 BACKUP_FILE="/etc/apt/sources.list.bak"
 UBUNTU_SOURCES="/etc/apt/sources.list.d/ubuntu.sources"
 UBUNTU_SOURCES_BAK="/etc/apt/sources.list.d/ubuntu.sources.bak.apt-mirror-pro"
+DEBIAN_SOURCES="/etc/apt/sources.list.d/debian.sources"
+DEBIAN_SOURCES_BAK="/etc/apt/sources.list.d/debian.sources.bak.apt-mirror-pro"
 MIRRORS_LIST_URL="http://mirrors.ubuntu.com/IR.txt"
 CONFIG_DIR="/etc/apt-mirror-pro"
 CUSTOM_MIRRORS_FILE="$CONFIG_DIR/custom_mirrors.conf"
@@ -102,7 +104,10 @@ declare -A MIRROR_SECURITY_URLS=(
 ["Liara"]="http://linux-mirror.liara.ir/repository/ubuntu-security/"
 )
 
-OFFICIAL="http://archive.ubuntu.com/ubuntu/"
+OFFICIAL_UBUNTU="http://archive.ubuntu.com/ubuntu/"
+OFFICIAL_DEBIAN="http://deb.debian.org/debian/"
+# Resolved after distro detection (see resolve_official)
+OFFICIAL="$OFFICIAL_UBUNTU"
 
 # Auto, Official, Regional, Reset, Custom, Show IR list, Manage backups, DNS tools, Exit
 MENU_EXTRA=9
@@ -142,8 +147,9 @@ ensure_deps() {
     command -v curl >/dev/null 2>&1 || pkgs+=("curl")
     command -v dig >/dev/null 2>&1 || pkgs+=("dnsutils")
     if [[ ${#pkgs[@]} -gt 0 ]]; then
-        apt update >/dev/null 2>&1 || true
-        apt install -y "${pkgs[@]}" >/dev/null 2>&1 || true
+        # Short timeouts — on restricted nets apt may hang; local cache still helps.
+        timeout 45 apt-get update -qq >/dev/null 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive timeout 90 apt-get install -y -qq "${pkgs[@]}" >/dev/null 2>&1 || true
     fi
     if ! command -v dig >/dev/null 2>&1; then
         HAVE_DIG=0
@@ -286,6 +292,7 @@ rollback_latest_snapshot() {
         rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
         cp -a "$last/sources.list.d/." /etc/apt/sources.list.d/ || true
     fi
+    ensure_single_apt_channel
     refresh_apt_lists
     echo "${GREEN}✔ Rollback applied${NC}"
     return 0
@@ -352,25 +359,26 @@ backup_sources() {
     fi
 }
 
-backup_ubuntu_sources() {
+backup_deb822_file() {
+    local src="$1"
+    local initial_bak="$2"
     local ts
     ts=$(date +%F-%H%M%S)
-
-    if [[ ! -f "$UBUNTU_SOURCES" ]]; then
-        return 0
+    [[ -f "$src" ]] || return 0
+    if [[ ! -f "$initial_bak" ]]; then
+        cp "$src" "$initial_bak"
     fi
+    cp "$src" "${src}.bak.${ts}"
+}
 
-    if [[ ! -f "$UBUNTU_SOURCES_BAK" ]]; then
-        cp "$UBUNTU_SOURCES" "$UBUNTU_SOURCES_BAK"
-    fi
-
-    cp "$UBUNTU_SOURCES" "${UBUNTU_SOURCES}.bak.${ts}"
+backup_ubuntu_sources() {
+    backup_deb822_file "$UBUNTU_SOURCES" "$UBUNTU_SOURCES_BAK"
 }
 
 manage_backups() {
     local -a backups=()
     local bfile bdate mirrors i BCHOICE SELECTED_BACKUP ORIGINAL_FILE
-    local PRE_RESTORE_BACKUP CONFIRM raw_lines
+    local PRE_RESTORE_BACKUP CONFIRM
 
     echo "${BLUE}====================================${NC}"
     echo "${BLUE}Backup Manager${NC}"
@@ -380,8 +388,10 @@ manage_backups() {
         {
             ls "${SOURCES_FILE}.bak."* 2>/dev/null || true
             ls /etc/apt/sources.list.d/ubuntu.sources.bak.* 2>/dev/null || true
+            ls /etc/apt/sources.list.d/debian.sources.bak.* 2>/dev/null || true
             [[ -f "$BACKUP_FILE" ]] && echo "$BACKUP_FILE"
             [[ -f "$UBUNTU_SOURCES_BAK" ]] && echo "$UBUNTU_SOURCES_BAK"
+            [[ -f "$DEBIAN_SOURCES_BAK" ]] && echo "$DEBIAN_SOURCES_BAK"
         } | grep -v '^$' | sort -ru
     )
 
@@ -442,17 +452,23 @@ manage_backups() {
 
     if [[ "$SELECTED_BACKUP" == *"ubuntu.sources"* ]]; then
         ORIGINAL_FILE="$UBUNTU_SOURCES"
+    elif [[ "$SELECTED_BACKUP" == *"debian.sources"* ]]; then
+        ORIGINAL_FILE="$DEBIAN_SOURCES"
     else
         ORIGINAL_FILE="$SOURCES_FILE"
     fi
 
     PRE_RESTORE_BACKUP="${ORIGINAL_FILE}.bak.$(date +%F-%H%M%S)"
     echo -n "Saving current config as $PRE_RESTORE_BACKUP ... "
-    if cp "$ORIGINAL_FILE" "$PRE_RESTORE_BACKUP" 2>/dev/null; then
-        echo "${GREEN}OK${NC}"
+    if [[ -f "$ORIGINAL_FILE" ]]; then
+        if cp "$ORIGINAL_FILE" "$PRE_RESTORE_BACKUP" 2>/dev/null; then
+            echo "${GREEN}OK${NC}"
+        else
+            echo "${RED}FAILED${NC}"
+            return 1
+        fi
     else
-        echo "${RED}FAILED${NC}"
-        return 1
+        echo "${YELLOW}(no existing file)${NC}"
     fi
 
     echo -n "Restoring to $ORIGINAL_FILE ... "
@@ -462,6 +478,23 @@ manage_backups() {
         echo "${RED}FAILED${NC}"
         return 1
     fi
+
+    # Avoid apt "configured multiple times" when only one channel was restored
+    if [[ "$ORIGINAL_FILE" == "$UBUNTU_SOURCES" || "$ORIGINAL_FILE" == "$DEBIAN_SOURCES" ]]; then
+        neutralize_sources_list
+        if [[ "$ORIGINAL_FILE" == "$UBUNTU_SOURCES" && -f "$DEBIAN_SOURCES" ]]; then
+            backup_deb822_file "$DEBIAN_SOURCES" "$DEBIAN_SOURCES_BAK"
+            rm -f "$DEBIAN_SOURCES"
+        elif [[ "$ORIGINAL_FILE" == "$DEBIAN_SOURCES" && -f "$UBUNTU_SOURCES" ]]; then
+            backup_deb822_file "$UBUNTU_SOURCES" "$UBUNTU_SOURCES_BAK"
+            rm -f "$UBUNTU_SOURCES"
+        fi
+    else
+        if (( $(count_active_deb_lines "$SOURCES_FILE") > 0 )); then
+            disable_deb822_sources
+        fi
+    fi
+    ensure_single_apt_channel
 
     refresh_apt_lists
     echo "${YELLOW}Running apt update...${NC}"
@@ -476,24 +509,92 @@ manage_backups() {
 reset_sources() {
     echo "${YELLOW}Resetting sources...${NC}"
 
-    if [[ -f "$BACKUP_FILE" ]]; then
-        cp "$BACKUP_FILE" "$SOURCES_FILE"
-        echo "${GREEN}✔ Restored backup${NC}"
-    else
+    local has_list_bak=0 has_deb822_bak=0
+    [[ -f "$BACKUP_FILE" ]] && has_list_bak=1
+    [[ -f "$UBUNTU_SOURCES_BAK" || -f "$DEBIAN_SOURCES_BAK" ]] && has_deb822_bak=1
+
+    if (( has_list_bak == 0 && has_deb822_bak == 0 )); then
         echo "${YELLOW}No backup → using official${NC}"
-        update_sources "$OFFICIAL"
+        update_sources "$(get_official_mirror)"
         return
     fi
 
-    if [[ -f "$UBUNTU_SOURCES_BAK" ]]; then
-        cp "$UBUNTU_SOURCES_BAK" "$UBUNTU_SOURCES"
-        echo "${GREEN}✔ Restored ubuntu.sources (deb822)${NC}"
+    # Prefer a single channel to avoid apt "configured multiple times" warnings.
+    if (( has_deb822_bak == 1 )); then
+        if [[ -f "$UBUNTU_SOURCES_BAK" ]]; then
+            cp "$UBUNTU_SOURCES_BAK" "$UBUNTU_SOURCES"
+            echo "${GREEN}✔ Restored ubuntu.sources (deb822)${NC}"
+        fi
+        if [[ -f "$DEBIAN_SOURCES_BAK" ]]; then
+            cp "$DEBIAN_SOURCES_BAK" "$DEBIAN_SOURCES"
+            echo "${GREEN}✔ Restored debian.sources (deb822)${NC}"
+        fi
+        neutralize_sources_list
+    elif (( has_list_bak == 1 )); then
+        cp "$BACKUP_FILE" "$SOURCES_FILE"
+        echo "${GREEN}✔ Restored sources.list backup${NC}"
+        disable_deb822_sources
     fi
 
+    ensure_single_apt_channel
     refresh_apt_lists
 }
 
 # ───────── SYSTEM ─────────
+get_distro_id() {
+    local id=""
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck source=/dev/null
+        . /etc/os-release
+        id="${ID:-}"
+    fi
+    echo "${id,,}"
+}
+
+get_distro_like() {
+    local like=""
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck source=/dev/null
+        . /etc/os-release
+        like="${ID_LIKE:-}"
+    fi
+    echo "${like,,}"
+}
+
+is_debian_family() {
+    local id like
+    id=$(get_distro_id)
+    like=$(get_distro_like)
+    [[ "$id" == "debian" || "$like" == *debian* ]]
+}
+
+is_ubuntu_family() {
+    local id like
+    id=$(get_distro_id)
+    like=$(get_distro_like)
+    [[ "$id" == "ubuntu" || "$id" == "linuxmint" || "$id" == "pop" || "$like" == *ubuntu* ]]
+}
+
+get_official_mirror() {
+    if [[ "$(get_distro_id)" == "debian" ]]; then
+        echo "$OFFICIAL_DEBIAN"
+    else
+        echo "$OFFICIAL_UBUNTU"
+    fi
+}
+
+get_official_security_mirror() {
+    if [[ "$(get_distro_id)" == "debian" ]]; then
+        echo "http://security.debian.org/debian-security/"
+    else
+        echo "http://security.ubuntu.com/ubuntu/"
+    fi
+}
+
+resolve_official() {
+    OFFICIAL="$(get_official_mirror)"
+}
+
 get_codename() {
     local c
     c=$(lsb_release -cs 2>/dev/null) || true
@@ -504,25 +605,80 @@ get_codename() {
     if [[ -r /etc/os-release ]]; then
         # shellcheck source=/dev/null
         . /etc/os-release
-        echo "${VERSION_CODENAME:-jammy}"
-        return
+        if [[ -n "${VERSION_CODENAME:-}" ]]; then
+            echo "$VERSION_CODENAME"
+            return
+        fi
+        if [[ -n "${UBUNTU_CODENAME:-}" ]]; then
+            echo "$UBUNTU_CODENAME"
+            return
+        fi
     fi
-    echo "jammy"
+    if [[ "$(get_distro_id)" == "debian" ]]; then
+        echo "bookworm"
+    else
+        echo "jammy"
+    fi
+}
+
+apt_components() {
+    if [[ "$(get_distro_id)" == "debian" ]]; then
+        echo "main contrib non-free non-free-firmware"
+    else
+        echo "main restricted universe multiverse"
+    fi
+}
+
+apt_signed_by() {
+    local id
+    id=$(get_distro_id)
+    if [[ "$id" == "debian" ]]; then
+        if [[ -f /usr/share/keyrings/debian-archive-keyring.gpg ]]; then
+            echo "/usr/share/keyrings/debian-archive-keyring.gpg"
+            return
+        fi
+    else
+        if [[ -f /usr/share/keyrings/ubuntu-archive-keyring.gpg ]]; then
+            echo "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
+            return
+        fi
+    fi
+    # Older systems / missing keyring file: omit Signed-By to avoid apt warnings
+    echo ""
+}
+
+primary_deb822_file() {
+    if [[ -f "$UBUNTU_SOURCES" ]]; then
+        echo "$UBUNTU_SOURCES"
+    elif [[ -f "$DEBIAN_SOURCES" ]]; then
+        echo "$DEBIAN_SOURCES"
+    else
+        echo ""
+    fi
+}
+
+count_active_deb_lines() {
+    local f="$1" n
+    [[ -f "$f" ]] || { echo 0; return; }
+    # Important: do not use `grep -c || echo 0` — grep -c prints 0 and exits 1 on no match.
+    n=$(grep -cE '^deb(-src)?[[:space:]]' "$f" 2>/dev/null) || true
+    echo "${n:-0}"
 }
 
 get_current_mirror() {
-    local m
-    if [[ -f "$UBUNTU_SOURCES" ]]; then
-        m=$(grep -m1 '^URIs:' "$UBUNTU_SOURCES" 2>/dev/null | sed 's/^URIs:[[:space:]]*//' | awk '{print $1}')
+    local m deb822
+    deb822=$(primary_deb822_file)
+    if [[ -n "$deb822" ]]; then
+        m=$(grep -m1 '^URIs:' "$deb822" 2>/dev/null | sed 's/^URIs:[[:space:]]*//' | awk '{print $1}')
         [[ -n "$m" ]] && echo "$m" && return
     fi
     if [[ -f "$SOURCES_FILE" ]]; then
-        grep -m1 "^deb " "$SOURCES_FILE" 2>/dev/null | awk '{print $2}'
+        grep -m1 -E '^deb[[:space:]]' "$SOURCES_FILE" 2>/dev/null | awk '{print $2}'
     fi
 }
 
 detect_sources_format() {
-    if [[ -f "$UBUNTU_SOURCES" ]]; then
+    if [[ -n "$(primary_deb822_file)" ]]; then
         echo "deb822"
     else
         echo "legacy"
@@ -533,94 +689,188 @@ validate_url() {
     [[ $1 =~ ^https?:// ]]
 }
 
-clear_sources_list_duplicates() {
-    local active_lines
-    active_lines=$(grep -cE '^deb ' "$SOURCES_FILE" 2>/dev/null || echo 0)
-    if [[ "$active_lines" -gt 0 ]]; then
+neutralize_sources_list() {
+    local n
+    n=$(count_active_deb_lines "$SOURCES_FILE")
+    if (( n > 0 )); then
         cp "$SOURCES_FILE" "${SOURCES_FILE}.bak.$(date +%F-%H%M%S)" 2>/dev/null || true
-        echo "# Cleared by apt-mirror-pro on $(date) — using ubuntu.sources (deb822)" >"$SOURCES_FILE"
-        echo "${YELLOW}✔ Cleared duplicate deb lines from sources.list${NC}"
+        echo "# Cleared by apt-mirror-pro on $(date) — using deb822 (*.sources) only" >"$SOURCES_FILE"
+        echo "${YELLOW}✔ Cleared duplicate deb lines from sources.list (avoids apt warnings)${NC}"
     fi
 }
 
-disable_ubuntu_deb822_sources() {
-    if [[ ! -f "$UBUNTU_SOURCES" ]]; then
-        return 0
+disable_deb822_sources() {
+    if [[ -f "$UBUNTU_SOURCES" ]]; then
+        backup_deb822_file "$UBUNTU_SOURCES" "$UBUNTU_SOURCES_BAK"
+        rm -f "$UBUNTU_SOURCES"
+        echo "${YELLOW}✔ Removed $UBUNTU_SOURCES (legacy sources.list mode)${NC}"
     fi
-    backup_ubuntu_sources
-    rm -f "$UBUNTU_SOURCES"
-    echo "${YELLOW}✔ Removed $UBUNTU_SOURCES (legacy sources.list mode)${NC}"
+    if [[ -f "$DEBIAN_SOURCES" ]]; then
+        backup_deb822_file "$DEBIAN_SOURCES" "$DEBIAN_SOURCES_BAK"
+        rm -f "$DEBIAN_SOURCES"
+        echo "${YELLOW}✔ Removed $DEBIAN_SOURCES (legacy sources.list mode)${NC}"
+    fi
+}
+
+# Keep only one APT channel active: either deb822 *.sources OR classic sources.list.
+# Prevents: W: Target Packages ... is configured multiple times in ...
+ensure_single_apt_channel() {
+    local fmt
+    fmt=$(detect_sources_format)
+    if [[ "$fmt" == "deb822" ]]; then
+        neutralize_sources_list
+    else
+        if [[ -f "$UBUNTU_SOURCES" || -f "$DEBIAN_SOURCES" ]]; then
+            disable_deb822_sources
+        fi
+    fi
 }
 
 refresh_apt_lists() {
-    apt clean
-    rm -rf /var/lib/apt/lists/*
+    apt clean >/dev/null 2>&1 || true
+    rm -rf /var/lib/apt/lists/* 2>/dev/null || true
 }
 
 write_deb822_sources() {
     local mirror="$1"
     local codename="$2"
     local security_mirror="$3"
+    local target components signed_by signed_line=""
 
-    backup_ubuntu_sources
-    clear_sources_list_duplicates
+    if [[ "$(get_distro_id)" == "debian" ]]; then
+        target="$DEBIAN_SOURCES"
+        backup_deb822_file "$DEBIAN_SOURCES" "$DEBIAN_SOURCES_BAK"
+        if [[ -f "$UBUNTU_SOURCES" ]]; then
+            backup_deb822_file "$UBUNTU_SOURCES" "$UBUNTU_SOURCES_BAK"
+            rm -f "$UBUNTU_SOURCES"
+        fi
+    else
+        target="$UBUNTU_SOURCES"
+        backup_deb822_file "$UBUNTU_SOURCES" "$UBUNTU_SOURCES_BAK"
+        if [[ -f "$DEBIAN_SOURCES" ]]; then
+            backup_deb822_file "$DEBIAN_SOURCES" "$DEBIAN_SOURCES_BAK"
+            rm -f "$DEBIAN_SOURCES"
+        fi
+    fi
+
+    neutralize_sources_list
 
     mirror="${mirror%/}"
     security_mirror="${security_mirror%/}"
+    components=$(apt_components)
+    signed_by=$(apt_signed_by)
+    [[ -n "$signed_by" ]] && signed_line="Signed-By: $signed_by"
 
-    if [[ "$mirror" == "$security_mirror" ]]; then
-        cat >"$UBUNTU_SOURCES" <<EOF
+    if [[ "$(get_distro_id)" == "debian" ]]; then
+        if [[ "$mirror" == "$security_mirror" ]]; then
+            cat >"$target" <<EOF
 # Mirror set by apt-mirror-pro on $(date)
 Types: deb
 URIs: $mirror
-Suites: $codename $codename-updates $codename-backports $codename-security
-Components: main restricted universe multiverse
-Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+Suites: $codename $codename-updates $codename-security
+Components: $components
+${signed_line}
 EOF
-    else
-        cat >"$UBUNTU_SOURCES" <<EOF
+        else
+            cat >"$target" <<EOF
 # Mirror set by apt-mirror-pro on $(date)
 Types: deb
 URIs: $mirror
-Suites: $codename $codename-updates $codename-backports
-Components: main restricted universe multiverse
-Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+Suites: $codename $codename-updates
+Components: $components
+${signed_line}
 
 Types: deb
 URIs: $security_mirror
 Suites: $codename-security
-Components: main restricted universe multiverse
-Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+Components: $components
+${signed_line}
 EOF
+        fi
+    else
+        if [[ "$mirror" == "$security_mirror" ]]; then
+            cat >"$target" <<EOF
+# Mirror set by apt-mirror-pro on $(date)
+Types: deb
+URIs: $mirror
+Suites: $codename $codename-updates $codename-backports $codename-security
+Components: $components
+${signed_line}
+EOF
+        else
+            cat >"$target" <<EOF
+# Mirror set by apt-mirror-pro on $(date)
+Types: deb
+URIs: $mirror
+Suites: $codename $codename-updates $codename-backports
+Components: $components
+${signed_line}
+
+Types: deb
+URIs: $security_mirror
+Suites: $codename-security
+Components: $components
+${signed_line}
+EOF
+        fi
     fi
-    echo "${GREEN}✔ Wrote deb822 → $UBUNTU_SOURCES${NC}"
+
+    # Drop empty Signed-By lines if keyring missing
+    sed -i '/^Signed-By:[[:space:]]*$/d' "$target" 2>/dev/null || true
+    awk 'BEGIN{blank=0} /^$/{blank++; if(blank<=1) print; next} {blank=0; print}' "$target" >"${target}.tmp" \
+        && mv "${target}.tmp" "$target"
+
+    echo "${GREEN}✔ Wrote deb822 → $target${NC}"
 }
 
 write_legacy_sources() {
     local mirror="$1"
     local codename="$2"
     local security_mirror="$3"
+    local components
 
-    disable_ubuntu_deb822_sources
+    disable_deb822_sources
+    components=$(apt_components)
+    mirror="${mirror%/}"
+    security_mirror="${security_mirror%/}"
 
-    cat >"$SOURCES_FILE" <<EOF
+    # No deb-src by default — many regional mirrors omit them and apt prints noise.
+    if [[ "$(get_distro_id)" == "debian" ]]; then
+        cat >"$SOURCES_FILE" <<EOF
 # Mirror set by apt-mirror-pro on $(date)
-deb $mirror $codename main restricted universe multiverse
-deb $mirror $codename-updates main restricted universe multiverse
-deb $mirror $codename-backports main restricted universe multiverse
-deb $security_mirror $codename-security main restricted universe multiverse
-
-deb-src $mirror $codename main restricted universe multiverse
-deb-src $mirror $codename-updates main restricted universe multiverse
-deb-src $mirror $codename-backports main restricted universe multiverse
-deb-src $security_mirror $codename-security main restricted universe multiverse
+deb $mirror/ $codename $components
+deb $mirror/ $codename-updates $components
+deb $security_mirror/ $codename-security $components
 EOF
+    else
+        cat >"$SOURCES_FILE" <<EOF
+# Mirror set by apt-mirror-pro on $(date)
+deb $mirror/ $codename $components
+deb $mirror/ $codename-updates $components
+deb $mirror/ $codename-backports $components
+deb $security_mirror/ $codename-security $components
+EOF
+    fi
 }
 
 confirm_invalid_mirror() {
     echo "${YELLOW}Warning: mirror failed deep validation (may be syncing or incomplete).${NC}"
     read -rp "Continue anyway? (y/N): " cont
     [[ "$cont" =~ ^[Yy]$ ]]
+}
+
+prefer_deb822_format() {
+    # Prefer deb822 when the distro already ships *.sources (Ubuntu 24.04+, Debian 12+)
+    # or when a prior deb822 file / modern release is detected.
+    if [[ -n "$(primary_deb822_file)" ]]; then
+        return 0
+    fi
+    case "$(get_codename)" in
+        noble|oracular|plucky|questing|bookworm|trixie|forky)
+            return 0
+            ;;
+    esac
+    return 1
 }
 
 update_sources() {
@@ -630,6 +880,8 @@ update_sources() {
     local security_mirror
     local fmt
     local snapshot_dir
+
+    resolve_official
 
     validate_url "$mirror" || {
         echo "${RED}Invalid URL${NC}"
@@ -645,8 +897,8 @@ update_sources() {
         }
         [[ $security_override != */ ]] && security_override="${security_override}/"
         security_mirror="$security_override"
-    elif [[ "$mirror" == "$OFFICIAL" ]]; then
-        security_mirror="http://security.ubuntu.com/ubuntu/"
+    elif [[ "$mirror" == "$OFFICIAL_UBUNTU" || "$mirror" == "$OFFICIAL_DEBIAN" || "$mirror" == "$OFFICIAL" ]]; then
+        security_mirror="$(get_official_security_mirror)"
     else
         security_mirror="$mirror"
     fi
@@ -679,13 +931,19 @@ update_sources() {
         fi
     fi
 
-    fmt=$(detect_sources_format)
+    if prefer_deb822_format; then
+        fmt="deb822"
+    else
+        fmt=$(detect_sources_format)
+    fi
+
     if [[ "$fmt" == "deb822" ]]; then
         write_deb822_sources "$mirror" "$codename" "$security_mirror"
     else
         write_legacy_sources "$mirror" "$codename" "$security_mirror"
     fi
 
+    ensure_single_apt_channel
     refresh_apt_lists
     echo "${GREEN}✔ Updated successfully${NC}"
 }
@@ -882,12 +1140,28 @@ apply_mirror_by_name() {
 
 # ───────── REGIONAL ─────────
 get_regional() {
-    local cc
-    cc=$(curl -sS --max-time 3 https://ipapi.co/country 2>/dev/null | tr -d '[:space:]')
+    local cc="" id
+    # Geo endpoints often fail on restricted/national nets — default to ir.
+    cc=$(curl -4 -sS --connect-timeout 2 --max-time 3 \
+        "http://ip-api.com/line/?fields=countryCode" 2>/dev/null | tr -d '[:space:]')
+    if [[ ! "$cc" =~ ^[A-Za-z]{2}$ ]]; then
+        cc=$(curl -4 -sS --connect-timeout 2 --max-time 3 \
+            "https://ifconfig.co/country-iso" 2>/dev/null | tr -d '[:space:]')
+    fi
+    if [[ ! "$cc" =~ ^[A-Za-z]{2}$ ]]; then
+        cc=$(curl -4 -sS --connect-timeout 2 --max-time 3 \
+            "https://ipapi.co/country" 2>/dev/null | tr -d '[:space:]')
+    fi
     if [[ ! "$cc" =~ ^[A-Za-z]{2}$ ]]; then
         cc="ir"
     fi
-    echo "http://${cc,,}.archive.ubuntu.com/ubuntu/"
+    id=$(get_distro_id)
+    if [[ "$id" == "debian" ]]; then
+        # No reliable cc.debian.org layout; keep official (or pick a preset mirror manually).
+        echo "$OFFICIAL_DEBIAN"
+    else
+        echo "http://${cc,,}.archive.ubuntu.com/ubuntu/"
+    fi
 }
 
 # ───────── DNS HELPERS ─────────
@@ -945,6 +1219,24 @@ uses_systemd_resolved() {
     systemctl is-active --quiet systemd-resolved 2>/dev/null
 }
 
+# Write /etc/resolv.conf safely even when it is a symlink (common with systemd-resolved).
+write_resolv_conf_file() {
+    local ts="$1"
+    shift
+    mkdir -p "$DNS_BACKUP_DIR"
+    if [[ -e /etc/resolv.conf || -L /etc/resolv.conf ]]; then
+        cp -a /etc/resolv.conf "${DNS_BACKUP_DIR}/resolv.conf.${ts}" 2>/dev/null || true
+    fi
+    if [[ -L /etc/resolv.conf ]]; then
+        rm -f /etc/resolv.conf
+    fi
+    {
+        for ns in "$@"; do
+            [[ -n "$ns" ]] && printf 'nameserver %s\n' "$ns"
+        done
+    } >/etc/resolv.conf
+}
+
 print_current_dns() {
     echo ""
     echo -e "${CYAN}─── Current DNS ─────────────────────────────────────${NC}"
@@ -987,22 +1279,19 @@ set_dns() {
     mkdir -p "$DNS_BACKUP_DIR"
 
     if uses_systemd_resolved; then
+        [[ -f /etc/systemd/resolved.conf ]] || printf '[Resolve]\n' >/etc/systemd/resolved.conf
         cp /etc/systemd/resolved.conf "${DNS_BACKUP_DIR}/resolved.conf.${ts}" 2>/dev/null || true
-        sed -i '/^DNS=/d;/^FallbackDNS=/d' /etc/systemd/resolved.conf
+        sed -i '/^DNS=/d;/^FallbackDNS=/d;/^#DNS=/d;/^#FallbackDNS=/d' /etc/systemd/resolved.conf
         if grep -q '^\[Resolve\]' /etc/systemd/resolved.conf; then
             sed -i "/^\[Resolve\]/a DNS=${dns_line}" /etc/systemd/resolved.conf
         else
             printf '\n[Resolve]\nDNS=%s\n' "${dns_line}" >> /etc/systemd/resolved.conf
         fi
-        systemctl restart systemd-resolved
+        systemctl restart systemd-resolved 2>/dev/null || true
         echo -e "${GREEN}DNS set to ${name} (${dns_line}) via systemd-resolved.${NC}"
         echo -e "${YELLOW}If DHCP/NetworkManager also sets per-link DNS, verify with status below.${NC}"
     else
-        cp /etc/resolv.conf "${DNS_BACKUP_DIR}/resolv.conf.${ts}" 2>/dev/null || true
-        {
-            printf 'nameserver %s\n' "${dns1}"
-            [[ -n "${dns2}" ]] && printf 'nameserver %s\n' "${dns2}"
-        } >/etc/resolv.conf
+        write_resolv_conf_file "$ts" "$dns1" "$dns2"
         echo -e "${GREEN}DNS set to ${name} (${dns_line}) via /etc/resolv.conf.${NC}"
         echo -e "${YELLOW}Note: NetworkManager or cloud-init may overwrite this on reboot.${NC}"
     fi
@@ -1027,7 +1316,7 @@ restore_dns() {
                 latest=$(ls -t "${DNS_BACKUP_DIR}"/resolved.conf.* 2>/dev/null | head -n1 || true)
                 if [[ -n "${latest}" ]]; then
                     cp "${latest}" /etc/systemd/resolved.conf
-                    systemctl restart systemd-resolved
+                    systemctl restart systemd-resolved 2>/dev/null || true
                     echo -e "${GREEN}Restored systemd-resolved from ${latest}.${NC}"
                 else
                     echo "No backup found. Use option 2 for system default."
@@ -1035,6 +1324,9 @@ restore_dns() {
             else
                 latest=$(ls -t "${DNS_BACKUP_DIR}"/resolv.conf.* 2>/dev/null | head -n1 || true)
                 if [[ -n "${latest}" ]]; then
+                    if [[ -L /etc/resolv.conf ]]; then
+                        rm -f /etc/resolv.conf
+                    fi
                     cp "${latest}" /etc/resolv.conf
                     echo -e "${GREEN}Restored /etc/resolv.conf from ${latest}.${NC}"
                 else
@@ -1045,14 +1337,30 @@ restore_dns() {
         2)
             mkdir -p "$DNS_BACKUP_DIR"
             if uses_systemd_resolved; then
+                [[ -f /etc/systemd/resolved.conf ]] || printf '[Resolve]\n' >/etc/systemd/resolved.conf
                 cp /etc/systemd/resolved.conf "${DNS_BACKUP_DIR}/resolved.conf.${ts}" 2>/dev/null || true
                 sed -i '/^DNS=/d;/^FallbackDNS=/d' /etc/systemd/resolved.conf
-                systemctl restart systemd-resolved
+                systemctl restart systemd-resolved 2>/dev/null || true
                 echo -e "${GREEN}Custom DNS removed. systemd-resolved will use DHCP-provided DNS.${NC}"
+            elif command -v resolvconf >/dev/null 2>&1; then
+                cp -a /etc/resolv.conf "${DNS_BACKUP_DIR}/resolv.conf.${ts}" 2>/dev/null || true
+                resolvconf -u 2>/dev/null || true
+                echo -e "${GREEN}Asked resolvconf to rebuild DNS from interfaces.${NC}"
+            elif [[ -f /run/NetworkManager/resolv.conf ]]; then
+                cp -a /etc/resolv.conf "${DNS_BACKUP_DIR}/resolv.conf.${ts}" 2>/dev/null || true
+                rm -f /etc/resolv.conf
+                ln -s /run/NetworkManager/resolv.conf /etc/resolv.conf
+                echo -e "${GREEN}Restored NetworkManager-managed resolv.conf symlink.${NC}"
+            elif [[ -f /run/systemd/resolve/stub-resolv.conf ]]; then
+                # systemd-resolved present but inactive — restore stub symlink, do not hardcode dead 127.0.0.53 alone
+                cp -a /etc/resolv.conf "${DNS_BACKUP_DIR}/resolv.conf.${ts}" 2>/dev/null || true
+                rm -f /etc/resolv.conf
+                ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+                systemctl try-restart systemd-resolved 2>/dev/null || true
+                echo -e "${GREEN}Restored systemd stub resolv.conf symlink.${NC}"
             else
-                cp /etc/resolv.conf "${DNS_BACKUP_DIR}/resolv.conf.${ts}" 2>/dev/null || true
-                printf 'nameserver 127.0.0.53\noptions edns0 trust-ad\n' >/etc/resolv.conf
-                echo -e "${GREEN}Restored default stub resolver (127.0.0.53).${NC}"
+                echo -e "${YELLOW}No DHCP DNS manager detected; leaving /etc/resolv.conf unchanged.${NC}"
+                echo "Use option 1 if you have a previous backup."
             fi
             ;;
         *)
@@ -1288,25 +1596,37 @@ benchmark_dns() {
 }
 
 test_connectivity() {
-    local custom_input targets target http_code
+    local custom_input targets target http_code scheme url
     print_current_dns
 
     echo ""
-    echo -e "${BOLD}Connectivity check (resolve + HTTPS):${NC}"
-    echo -e "${CYAN}Default: github.com  registry-1.docker.io  pypi.org  registry.npmjs.org${NC}"
+    echo -e "${BOLD}Connectivity check (resolve + HTTP/HTTPS):${NC}"
+    echo -e "${CYAN}Defaults mix regional mirrors + common registries (works better on restricted nets).${NC}"
     read -rp "Custom domains (space-separated) or Enter for defaults: " custom_input
     if [[ -n "${custom_input}" ]]; then
         # shellcheck disable=SC2206
         targets=(${custom_input})
     else
-        targets=("github.com" "registry-1.docker.io" "pypi.org" "registry.npmjs.org")
+        targets=(
+            "mirror.arvancloud.ir"
+            "repo.iut.ac.ir"
+            "packages.microsoft.com"
+            "github.com"
+            "pypi.org"
+            "registry.npmjs.org"
+        )
     fi
     echo ""
     for target in "${targets[@]}"; do
         if timeout 3 getent hosts "${target}" >/dev/null 2>&1; then
-            http_code=$(timeout 12 curl -s -o /dev/null -w '%{http_code}' \
-                --connect-timeout 8 --max-time 10 \
-                "https://${target}" 2>/dev/null) || http_code="000"
+            http_code="000"
+            for scheme in https http; do
+                url="${scheme}://${target}/"
+                http_code=$(timeout 12 curl -4 -s -o /dev/null -w '%{http_code}' \
+                    --connect-timeout 6 --max-time 10 \
+                    "$url" 2>/dev/null) || http_code="000"
+                [[ "$http_code" != "000" ]] && break
+            done
             case "${http_code}" in
                 000)
                     echo -e "  ${RED}[DOWN]${NC}      ${target} (connection failed)"
@@ -1352,10 +1672,12 @@ dns_tools_menu() {
 }
 
 # ───────── MENU ─────────
+resolve_official
+
 show_menu() {
     clear
     echo "${GREEN}APT Mirror Pro${NC}"
-    echo "Codename: $(get_codename) | Arch: $(get_arch) | Format: $(detect_sources_format)"
+    echo "Distro: $(get_distro_id) | Codename: $(get_codename) | Arch: $(get_arch) | Format: $(detect_sources_format)"
     echo "Current: $(get_current_mirror)"
     if [[ -n "${LAST_BEST_URL:-}" ]]; then
         echo "Last Auto: ${LAST_BEST_URL} (${LAST_BEST_MS:-?}ms, ${LAST_BEST_SPEED_KBPS:-?} KB/s) @ ${LAST_RUN_AT:-?}"
@@ -1414,7 +1736,7 @@ while true; do
 
         case $offset in
             1) auto_select ;;
-            2) update_sources "$OFFICIAL" ;;
+            2) update_sources "$(get_official_mirror)" ;;
             3)
                 echo "${YELLOW}Resolving regional mirror...${NC}"
                 update_sources "$(get_regional)"

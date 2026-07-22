@@ -1,5 +1,5 @@
 #!/bin/bash
-
+# APT Mirror Pro — Ubuntu/Debian mirror switcher + developer DNS helpers.
 # safer than set -e
 set -o pipefail
 
@@ -29,12 +29,16 @@ GREEN=$'\e[0;32m'
 RED=$'\e[0;31m'
 YELLOW=$'\e[0;33m'
 BLUE=$'\e[0;34m'
+CYAN=$'\e[0;36m'
+BOLD=$'\e[1m'
 NC=$'\e[0m'
 
 # ───────── MIRRORS ─────────
 MIRROR_NAMES=(
 "ArvanCloud"
 "IranServer"
+"Liara"
+"AminIDC"
 "LinuxMirrors"
 "Pishgaman"
 "Sindad"
@@ -64,6 +68,8 @@ MIRROR_NAMES=(
 declare -A MIRROR_URLS=(
 ["ArvanCloud"]="https://mirror.arvancloud.ir/ubuntu/"
 ["IranServer"]="https://mirror.iranserver.com/ubuntu/"
+["Liara"]="http://linux-mirror.liara.ir/repository/ubuntu/"
+["AminIDC"]="https://mirror.aminidc.com/ubuntu/"
 ["LinuxMirrors"]="http://repo.linuxmirrors.ir/ubuntu/"
 ["Pishgaman"]="http://ubuntu.pishgaman.net/ubuntu/"
 ["Sindad"]="https://ir.ubuntu.sindad.cloud/ubuntu/"
@@ -90,15 +96,19 @@ declare -A MIRROR_URLS=(
 ["Runflare"]="https://mirror-linux.runflare.com/ubuntu/"
 )
 
-# Separate security base (e.g. Shatel uses ubuntu-security host)
+# Separate security base (e.g. Shatel / Liara use a different security host)
 declare -A MIRROR_SECURITY_URLS=(
 ["Shatel"]="http://mirror.shatel.ir/ubuntu-security/"
+["Liara"]="http://linux-mirror.liara.ir/repository/ubuntu-security/"
 )
 
 OFFICIAL="http://archive.ubuntu.com/ubuntu/"
 
-# Auto, Official, Regional, Reset, Custom, Show IR list, Manage backups, Exit
-MENU_EXTRA=8
+# Auto, Official, Regional, Reset, Custom, Show IR list, Manage backups, DNS tools, Exit
+MENU_EXTRA=9
+DNS_BACKUP_DIR="$CONFIG_DIR/dns-backups"
+DNS_SLOW_MS=1800
+HAVE_DIG=1
 
 SKIP_REQUESTED=false
 OLD_STTY=""
@@ -106,10 +116,14 @@ OLD_STTY=""
 # ───────── GLOBAL COMMAND ─────────
 create_command_link() {
     local script_path
-    script_path="$(readlink -f "${BASH_SOURCE[0]:-$0}" 2>/dev/null)" || script_path="$(readlink -f "$0")"
-    if [[ ! -f "/usr/local/bin/mirror" ]]; then
+    script_path="$(readlink -f "${BASH_SOURCE[0]:-$0}" 2>/dev/null)" || script_path="$(readlink -f "$0" 2>/dev/null)" || true
+    # Skip when run via process substitution / pipe (e.g. bash <(curl ...))
+    if [[ -z "$script_path" || ! -f "$script_path" || "$script_path" == /dev/fd/* || "$script_path" == /proc/self/fd/* ]]; then
+        return 0
+    fi
+    if [[ ! -e "/usr/local/bin/mirror" ]]; then
         ln -s "$script_path" "/usr/local/bin/mirror"
-        chmod +x "/usr/local/bin/mirror"
+        chmod +x "$script_path" 2>/dev/null || true
         echo "${GREEN}✔ Command 'mirror' installed → /usr/local/bin/mirror${NC}"
     fi
 }
@@ -119,16 +133,20 @@ create_command_link() {
 
 create_command_link
 
-mkdir -p "$CONFIG_DIR" "$BACKUP_SNAPSHOT_DIR"
+mkdir -p "$CONFIG_DIR" "$BACKUP_SNAPSHOT_DIR" "$DNS_BACKUP_DIR"
 touch "$CUSTOM_MIRRORS_FILE" 2>/dev/null || true
 
 # ───────── DEPS & CUSTOM MIRRORS ─────────
 ensure_deps() {
     local pkgs=()
     command -v curl >/dev/null 2>&1 || pkgs+=("curl")
+    command -v dig >/dev/null 2>&1 || pkgs+=("dnsutils")
     if [[ ${#pkgs[@]} -gt 0 ]]; then
         apt update >/dev/null 2>&1 || true
         apt install -y "${pkgs[@]}" >/dev/null 2>&1 || true
+    fi
+    if ! command -v dig >/dev/null 2>&1; then
+        HAVE_DIG=0
     fi
 }
 
@@ -872,6 +890,467 @@ get_regional() {
     echo "http://${cc,,}.archive.ubuntu.com/ubuntu/"
 }
 
+# ───────── DNS HELPERS ─────────
+# Neutral groups for developer connectivity presets (not political messaging).
+PROVIDER_NAMES=()
+PROVIDER_DNS1=()
+PROVIDER_DNS2=()
+PROVIDER_GROUP=()
+
+add_dns_provider() {
+    PROVIDER_NAMES+=("$1")
+    PROVIDER_DNS1+=("$2")
+    PROVIDER_DNS2+=("$3")
+    PROVIDER_GROUP+=("$4")
+}
+
+# Developer / regional resolvers commonly used for package registries & APIs
+add_dns_provider "Shecan"            "178.22.122.100"  "185.51.200.2"    "dev"
+add_dns_provider "403.online"        "10.202.10.202"   "10.202.10.102"   "dev"
+add_dns_provider "Begzar"            "185.55.226.26"   "185.55.225.25"   "dev"
+add_dns_provider "Electro"           "78.157.42.100"   "78.157.42.101"   "dev"
+add_dns_provider "Radar"             "10.202.10.10"    "10.202.10.11"    "dev"
+add_dns_provider "DynX"              "10.70.95.150"    "10.70.95.162"    "dev"
+add_dns_provider "Bertina"           "193.186.32.32"   ""                "dev"
+add_dns_provider "Shelter"           "94.103.125.157"  "94.103.125.158"  "dev"
+add_dns_provider "Derak"             "193.151.128.100" "193.151.128.200" "dev"
+add_dns_provider "Parspack-Tehran2"  "45.159.149.19"   "185.164.72.97"   "dev"
+add_dns_provider "Parspack-Tehran3"  "185.8.174.140"   "130.185.77.69"   "dev"
+add_dns_provider "Parspack-Tehran11" "195.177.255.170" "178.239.151.228" "dev"
+# ISP resolvers
+add_dns_provider "Shatel"            "85.15.1.14"      "85.15.1.15"      "isp"
+add_dns_provider "Pishgaman"         "5.202.100.100"   "5.202.100.101"   "isp"
+add_dns_provider "Mobin-net"         "10.104.88.8"     "10.104.88.9"     "isp"
+add_dns_provider "AsiaTech"          "185.98.113.113"  "185.98.113.114"  "isp"
+add_dns_provider "TCI"               "217.218.155.155" "217.218.127.127" "isp"
+# National / other
+add_dns_provider "DNS-Pro"           "87.107.110.109"  "87.107.110.110"  "national"
+add_dns_provider "NIC"               "194.225.152.10"  ""                "national"
+# Public resolvers
+add_dns_provider "Cloudflare"        "1.1.1.1"         "1.0.0.1"         "public"
+add_dns_provider "Google"            "8.8.8.8"         "8.8.4.4"         "public"
+add_dns_provider "Quad9"             "9.9.9.9"         "149.112.112.112" "public"
+
+dns_group_label() {
+    case "$1" in
+        dev)      echo "Developer DNS" ;;
+        isp)      echo "ISP" ;;
+        national) echo "National / Other" ;;
+        public)   echo "Public" ;;
+        *)        echo "$1" ;;
+    esac
+}
+
+uses_systemd_resolved() {
+    systemctl is-active --quiet systemd-resolved 2>/dev/null
+}
+
+print_current_dns() {
+    echo ""
+    echo -e "${CYAN}─── Current DNS ─────────────────────────────────────${NC}"
+    if uses_systemd_resolved; then
+        local dns_servers
+        dns_servers=$(resolvectl status 2>/dev/null | awk '
+            /^Global/        { iface = "Global"; next }
+            /^Link [0-9]+/   { iface = $0; sub(/^Link [0-9]+ \(/, "", iface); sub(/\)[[:space:]]*$/, "", iface); next }
+            /Current DNS Server:|DNS Servers:/ {
+                line = $0
+                sub(/^[[:space:]]+/, "", line)
+                print "  [" iface "] " line
+            }
+        ' || true)
+        if [[ -n "${dns_servers}" ]]; then
+            echo "${dns_servers}"
+        else
+            echo "  systemd-resolved active but no DNS servers reported."
+        fi
+    else
+        local entries
+        entries=$(grep '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print "  " $2}' || true)
+        if [[ -n "${entries}" ]]; then
+            echo "${entries}"
+        else
+            echo "  /etc/resolv.conf has no nameserver entries."
+        fi
+    fi
+}
+
+set_dns() {
+    local dns1="$1"
+    local dns2="${2:-}"
+    local name="$3"
+    local dns_line="${dns1}"
+    local ts
+    ts=$(date +%Y%m%d-%H%M%S)
+    [[ -n "${dns2}" ]] && dns_line="${dns1} ${dns2}"
+
+    mkdir -p "$DNS_BACKUP_DIR"
+
+    if uses_systemd_resolved; then
+        cp /etc/systemd/resolved.conf "${DNS_BACKUP_DIR}/resolved.conf.${ts}" 2>/dev/null || true
+        sed -i '/^DNS=/d;/^FallbackDNS=/d' /etc/systemd/resolved.conf
+        if grep -q '^\[Resolve\]' /etc/systemd/resolved.conf; then
+            sed -i "/^\[Resolve\]/a DNS=${dns_line}" /etc/systemd/resolved.conf
+        else
+            printf '\n[Resolve]\nDNS=%s\n' "${dns_line}" >> /etc/systemd/resolved.conf
+        fi
+        systemctl restart systemd-resolved
+        echo -e "${GREEN}DNS set to ${name} (${dns_line}) via systemd-resolved.${NC}"
+        echo -e "${YELLOW}If DHCP/NetworkManager also sets per-link DNS, verify with status below.${NC}"
+    else
+        cp /etc/resolv.conf "${DNS_BACKUP_DIR}/resolv.conf.${ts}" 2>/dev/null || true
+        {
+            printf 'nameserver %s\n' "${dns1}"
+            [[ -n "${dns2}" ]] && printf 'nameserver %s\n' "${dns2}"
+        } >/etc/resolv.conf
+        echo -e "${GREEN}DNS set to ${name} (${dns_line}) via /etc/resolv.conf.${NC}"
+        echo -e "${YELLOW}Note: NetworkManager or cloud-init may overwrite this on reboot.${NC}"
+    fi
+    print_current_dns
+}
+
+restore_dns() {
+    local choice latest ts
+    ts=$(date +%Y%m%d-%H%M%S)
+    echo ""
+    echo -e "${BOLD}Restore DNS to:${NC}"
+    echo "1) Previous backup   [default]"
+    echo "2) System default    (remove custom DNS / use DHCP)"
+    echo "0) Back"
+    read -rp "Your choice [0-2, default=1]: " choice
+    choice=${choice:-1}
+    [[ "${choice}" == "0" ]] && return
+
+    case "${choice}" in
+        1)
+            if uses_systemd_resolved; then
+                latest=$(ls -t "${DNS_BACKUP_DIR}"/resolved.conf.* 2>/dev/null | head -n1 || true)
+                if [[ -n "${latest}" ]]; then
+                    cp "${latest}" /etc/systemd/resolved.conf
+                    systemctl restart systemd-resolved
+                    echo -e "${GREEN}Restored systemd-resolved from ${latest}.${NC}"
+                else
+                    echo "No backup found. Use option 2 for system default."
+                fi
+            else
+                latest=$(ls -t "${DNS_BACKUP_DIR}"/resolv.conf.* 2>/dev/null | head -n1 || true)
+                if [[ -n "${latest}" ]]; then
+                    cp "${latest}" /etc/resolv.conf
+                    echo -e "${GREEN}Restored /etc/resolv.conf from ${latest}.${NC}"
+                else
+                    echo "No backup found. Use option 2 for system default."
+                fi
+            fi
+            ;;
+        2)
+            mkdir -p "$DNS_BACKUP_DIR"
+            if uses_systemd_resolved; then
+                cp /etc/systemd/resolved.conf "${DNS_BACKUP_DIR}/resolved.conf.${ts}" 2>/dev/null || true
+                sed -i '/^DNS=/d;/^FallbackDNS=/d' /etc/systemd/resolved.conf
+                systemctl restart systemd-resolved
+                echo -e "${GREEN}Custom DNS removed. systemd-resolved will use DHCP-provided DNS.${NC}"
+            else
+                cp /etc/resolv.conf "${DNS_BACKUP_DIR}/resolv.conf.${ts}" 2>/dev/null || true
+                printf 'nameserver 127.0.0.53\noptions edns0 trust-ad\n' >/etc/resolv.conf
+                echo -e "${GREEN}Restored default stub resolver (127.0.0.53).${NC}"
+            fi
+            ;;
+        *)
+            echo "Invalid choice."
+            ;;
+    esac
+    print_current_dns
+}
+
+change_dns() {
+    local last_group="" i d1 d2 dns_show choice idx
+    echo ""
+    echo -e "${BOLD}Available DNS providers:${NC}"
+    for i in "${!PROVIDER_NAMES[@]}"; do
+        local grp="${PROVIDER_GROUP[$i]}"
+        if [[ "${grp}" != "${last_group}" ]]; then
+            echo ""
+            echo -e "${CYAN}── $(dns_group_label "${grp}") ──${NC}"
+            last_group="${grp}"
+        fi
+        d1="${PROVIDER_DNS1[$i]}"
+        d2="${PROVIDER_DNS2[$i]}"
+        dns_show="${d1}"
+        [[ -n "${d2}" ]] && dns_show="${d1}, ${d2}"
+        printf "%2d) %-22s %s\n" "$((i + 1))" "${PROVIDER_NAMES[$i]}" "${dns_show}"
+    done
+    echo ""
+    echo " 0) Back"
+    read -rp "Your choice [0-${#PROVIDER_NAMES[@]}, default=1]: " choice
+    choice=${choice:-1}
+    [[ "${choice}" == "0" ]] && return
+    if [[ ! "${choice}" =~ ^[0-9]+$ ]]; then
+        echo "Invalid choice. No changes made."
+        return
+    fi
+    idx=$((choice - 1))
+    if (( idx >= 0 && idx < ${#PROVIDER_NAMES[@]} )); then
+        set_dns "${PROVIDER_DNS1[$idx]}" "${PROVIDER_DNS2[$idx]}" "${PROVIDER_NAMES[$idx]}"
+    else
+        echo "Invalid choice. No changes made."
+    fi
+}
+
+BENCH_RESOLVED=0
+BENCH_REACHABLE=0
+BENCH_AVG=""
+BENCH_AVG_MS=0
+
+bench_one_dns() {
+    local server="$1"
+    local total="$2"
+    shift 2
+    local targets=("$@")
+    local total_ms=0 resolved=0 reachable=0
+    local target ip elapsed code dig_out start end
+
+    for target in "${targets[@]}"; do
+        ip=""
+        elapsed=0
+
+        if [[ -n "${server}" ]]; then
+            dig_out=$(timeout 3 dig +time=2 +tries=1 +notcp \
+                +noall +answer +stats \
+                "@${server}" "${target}" 2>&1 || true)
+            ip=$(printf "%s" "${dig_out}" \
+                | awk '{print $NF}' \
+                | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | paste -sd, - || true)
+            elapsed=$(printf "%s" "${dig_out}" \
+                | grep "Query time" \
+                | grep -oE '[0-9]+' | head -n1 || true)
+            elapsed=${elapsed:-0}
+        else
+            start=$(date +%s%N)
+            ip=$(timeout 3 getent hosts "${target}" 2>/dev/null \
+                | awk '{print $1}' | paste -sd, - || true)
+            end=$(date +%s%N)
+            elapsed=$(( (end - start) / 1000000 ))
+        fi
+
+        if [[ -n "${ip}" ]]; then
+            resolved=$((resolved + 1))
+            total_ms=$((total_ms + elapsed))
+            if [[ -n "${server}" ]]; then
+                # Use first resolved IP for reachability probe
+                local first_ip="${ip%%,*}"
+                code=$(timeout 12 curl -s -o /dev/null -w '%{http_code}' \
+                    -L --resolve "${target}:443:${first_ip}" \
+                    --connect-timeout 8 --max-time 10 \
+                    "https://${target}" 2>/dev/null) || code="000"
+            else
+                code=$(timeout 12 curl -s -o /dev/null -w '%{http_code}' \
+                    -L --connect-timeout 8 --max-time 10 \
+                    "https://${target}" 2>/dev/null) || code="000"
+            fi
+            # 403/451 often mean the origin rejects the client IP — still "resolved"
+            if [[ "${code}" != "000" ]]; then
+                reachable=$((reachable + 1))
+            fi
+        fi
+    done
+
+    BENCH_RESOLVED=${resolved}
+    BENCH_REACHABLE=${reachable}
+    if (( resolved > 0 )); then
+        BENCH_AVG_MS=$((total_ms / resolved))
+        BENCH_AVG="${BENCH_AVG_MS}ms"
+    else
+        BENCH_AVG_MS=999999
+        BENCH_AVG="-"
+    fi
+}
+
+benchmark_dns() {
+    local scope scope_filter scope_label custom_input targets total
+    local best_name="" best_idx=-1 best_score=-1 best_time=999999
+    local i grp slow_tag status_text status_color
+    local sys_reachable sys_avg_ms sys_color sys_status apply_best
+
+    if [[ "${HAVE_DIG}" -ne 1 ]]; then
+        echo ""
+        echo -e "${RED}dig is not available — install dnsutils, then re-run.${NC}"
+        return
+    fi
+
+    echo ""
+    echo -e "${BOLD}Which group to benchmark?${NC}"
+    echo "1) Developer DNS   [default]"
+    echo "2) ISP"
+    echo "3) National / Other"
+    echo "4) Public"
+    echo "5) All"
+    echo "0) Back"
+    read -rp "Your choice [0-5, default=1]: " scope
+    scope=${scope:-1}
+    [[ "${scope}" == "0" ]] && return
+    case "${scope}" in
+        1) scope_filter="dev"; scope_label="Developer DNS" ;;
+        2) scope_filter="isp"; scope_label="ISP" ;;
+        3) scope_filter="national"; scope_label="National / Other" ;;
+        4) scope_filter="public"; scope_label="Public" ;;
+        5) scope_filter="all"; scope_label="All" ;;
+        *) scope_filter="dev"; scope_label="Developer DNS" ;;
+    esac
+
+    echo ""
+    echo -e "${CYAN}Default targets: github.com  registry-1.docker.io  pypi.org  registry.npmjs.org${NC}"
+    read -rp "Custom domains (space-separated) or Enter for defaults: " custom_input
+    if [[ -n "${custom_input}" ]]; then
+        # shellcheck disable=SC2206
+        targets=(${custom_input})
+    else
+        targets=("github.com" "registry-1.docker.io" "pypi.org" "registry.npmjs.org")
+    fi
+    total=${#targets[@]}
+
+    echo ""
+    echo -e "${BOLD}Benchmarking [${scope_label}] — ${total} target(s).${NC}"
+    echo -e "${YELLOW}This may take a few minutes.${NC}"
+    echo ""
+    printf "%-22s %-9s %s\n" "PROVIDER" "RESOLVE" "STATUS"
+    printf "%-22s %-9s %s\n" "----------------------" "---------" "------------------------------"
+
+    for i in "${!PROVIDER_NAMES[@]}"; do
+        grp="${PROVIDER_GROUP[$i]}"
+        if [[ "${scope_filter}" != "all" && "${grp}" != "${scope_filter}" ]]; then
+            continue
+        fi
+
+        bench_one_dns "${PROVIDER_DNS1[$i]}" "${total}" "${targets[@]}"
+
+        slow_tag=""
+        (( BENCH_AVG_MS >= DNS_SLOW_MS && BENCH_RESOLVED > 0 )) && slow_tag=" [SLOW]"
+
+        if (( BENCH_RESOLVED == 0 )); then
+            status_color="${RED}"
+            status_text="UNREACHABLE"
+        elif (( BENCH_REACHABLE == total )); then
+            status_color="${GREEN}"
+            status_text="OK (${total}/${total})${slow_tag}"
+        elif (( BENCH_REACHABLE == 0 )); then
+            status_color="${RED}"
+            status_text="no-http (0/${total})${slow_tag}"
+        else
+            status_color="${YELLOW}"
+            status_text="partial (${BENCH_REACHABLE}/${total})${slow_tag}"
+        fi
+
+        printf "%-22s %-9s " "${PROVIDER_NAMES[$i]}" "${BENCH_AVG}"
+        echo -e "${status_color}${status_text}${NC}"
+
+        if (( BENCH_REACHABLE > 0 && BENCH_AVG_MS < DNS_SLOW_MS )); then
+            if (( BENCH_REACHABLE > best_score )) \
+                || { (( BENCH_REACHABLE == best_score )) && (( BENCH_AVG_MS < best_time )); }; then
+                best_score="${BENCH_REACHABLE}"
+                best_time="${BENCH_AVG_MS}"
+                best_name="${PROVIDER_NAMES[$i]}"
+                best_idx="${i}"
+            fi
+        fi
+    done
+
+    bench_one_dns "" "${total}" "${targets[@]}"
+    sys_reachable="${BENCH_REACHABLE}"
+    sys_avg_ms="${BENCH_AVG_MS}"
+    if (( BENCH_RESOLVED == 0 )); then
+        sys_color="${RED}"; sys_status="UNREACHABLE"
+    elif (( BENCH_REACHABLE == total )); then
+        sys_color="${GREEN}"; sys_status="OK (${total}/${total})"
+    elif (( BENCH_REACHABLE == 0 )); then
+        sys_color="${RED}"; sys_status="no-http (0/${total})"
+    else
+        sys_color="${YELLOW}"; sys_status="partial (${BENCH_REACHABLE}/${total})"
+    fi
+    printf "%-22s %-9s " "System (current)" "${BENCH_AVG}"
+    echo -e "${sys_color}${sys_status}${NC}"
+
+    echo ""
+    if [[ -n "${best_name}" ]]; then
+        if (( sys_reachable > best_score )) \
+            || { (( sys_reachable == best_score )) && (( sys_avg_ms <= best_time )); }; then
+            echo -e "${GREEN}>>> Current DNS already looks best for these targets.${NC}"
+        else
+            echo -e "${GREEN}${BOLD}>>> Suggested: ${best_name} — ${best_score}/${total} at ${best_time}ms${NC}"
+            read -rp "Apply ${best_name} now? [y/N]: " apply_best
+            apply_best=${apply_best:-N}
+            if [[ "${apply_best}" =~ ^[Yy]$ ]]; then
+                set_dns "${PROVIDER_DNS1[${best_idx}]}" "${PROVIDER_DNS2[${best_idx}]}" "${best_name}"
+            fi
+        fi
+    else
+        echo -e "${YELLOW}>>> No strong candidate. Try another group or different targets.${NC}"
+    fi
+}
+
+test_connectivity() {
+    local custom_input targets target http_code
+    print_current_dns
+
+    echo ""
+    echo -e "${BOLD}Connectivity check (resolve + HTTPS):${NC}"
+    echo -e "${CYAN}Default: github.com  registry-1.docker.io  pypi.org  registry.npmjs.org${NC}"
+    read -rp "Custom domains (space-separated) or Enter for defaults: " custom_input
+    if [[ -n "${custom_input}" ]]; then
+        # shellcheck disable=SC2206
+        targets=(${custom_input})
+    else
+        targets=("github.com" "registry-1.docker.io" "pypi.org" "registry.npmjs.org")
+    fi
+    echo ""
+    for target in "${targets[@]}"; do
+        if timeout 3 getent hosts "${target}" >/dev/null 2>&1; then
+            http_code=$(timeout 12 curl -s -o /dev/null -w '%{http_code}' \
+                --connect-timeout 8 --max-time 10 \
+                "https://${target}" 2>/dev/null) || http_code="000"
+            case "${http_code}" in
+                000)
+                    echo -e "  ${RED}[DOWN]${NC}      ${target} (connection failed)"
+                    ;;
+                403|451)
+                    echo -e "  ${YELLOW}[HTTP]${NC}      ${target} (HTTP ${http_code} — origin may reject this IP)"
+                    ;;
+                *)
+                    echo -e "  ${GREEN}[OK]${NC}        ${target} (HTTP ${http_code})"
+                    ;;
+            esac
+        else
+            echo -e "  ${RED}[NO-DNS]${NC}    ${target} (resolution failed)"
+        fi
+    done
+    echo ""
+    echo "Tip: use DNS benchmark to compare resolvers for these hosts."
+}
+
+dns_tools_menu() {
+    local choice
+    while true; do
+        echo ""
+        echo -e "${BOLD}${CYAN}DNS Tools${NC}"
+        echo -e "${CYAN}=========${NC}"
+        echo "1) Set DNS provider"
+        echo "2) Restore DNS"
+        echo "3) Show current DNS"
+        echo "4) Test connectivity"
+        echo "5) Benchmark DNS"
+        echo "0) Back"
+        read -rp "Your choice [0-5]: " choice
+        case "${choice}" in
+            1) change_dns ;;
+            2) restore_dns ;;
+            3) print_current_dns ;;
+            4) test_connectivity ;;
+            5) benchmark_dns ;;
+            0) return ;;
+            *) echo -e "${RED}Invalid choice.${NC}" ;;
+        esac
+    done
+}
+
 # ───────── MENU ─────────
 show_menu() {
     clear
@@ -906,6 +1385,8 @@ show_menu() {
     echo "$i) Show IR list"
     ((i++))
     echo "$i) Manage backups"
+    ((i++))
+    echo "$i) DNS tools"
     ((i++))
     echo "$i) Exit"
 }
@@ -949,7 +1430,8 @@ while true; do
                 continue
                 ;;
             7) manage_backups; run_apt=false ;;
-            8) exit 0 ;;
+            8) dns_tools_menu; run_apt=false ;;
+            9) exit 0 ;;
             *)
                 echo "${RED}Internal menu mismatch (offset $offset)${NC}"
                 sleep 1

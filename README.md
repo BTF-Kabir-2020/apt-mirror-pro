@@ -1,5 +1,7 @@
 # APT Mirror Pro
 
+[![CI](https://github.com/BTF-Kabir-2020/apt-mirror-pro/actions/workflows/ci.yml/badge.svg)](https://github.com/BTF-Kabir-2020/apt-mirror-pro/actions/workflows/ci.yml)
+
 **به فارسی:** ابزار Bash برای عوض کردن **آینهٔ مخازن APT** روی اوبونتو/دبیان، به‌همراه **ابزار DNS** برای تست و انتخاب resolver مناسب توسعه (registryها، Git، بسته‌ها).  
 **In English:** A Bash tool to switch Ubuntu/Debian APT mirrors, plus DNS helpers to pick a working resolver for common developer hosts.
 
